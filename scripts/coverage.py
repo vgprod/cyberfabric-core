@@ -752,13 +752,17 @@ def start_instrumented_server(config_file, output_dir, port=None):
     if os.path.commonpath([base_real, target_real]) != base_real:
         raise Exception("Invalid file path")
     log_fp = open(target_real, "w")
-    server_process = popen_new_group(
-        cmd,
-        env=env2,
-        cwd=PROJECT_ROOT,
-        stdout=log_fp,
-        stderr=subprocess.STDOUT,
-    )
+    try:
+        server_process = popen_new_group(
+            cmd,
+            env=env2,
+            cwd=PROJECT_ROOT,
+            stdout=log_fp,
+            stderr=subprocess.STDOUT,
+        )
+    except Exception:
+        log_fp.close()
+        raise
 
     return server_process, log_file, port, log_fp
 
@@ -853,7 +857,7 @@ def collect_e2e_local_coverage(
     run_cmd(["cargo", "llvm-cov", "clean", "--workspace"], cwd=PROJECT_ROOT)
 
     # Start server with coverage instrumentation
-    server_process, log_file, desired_port = start_instrumented_server(
+    server_process, log_file, desired_port, log_fp = start_instrumented_server(
         config_file, output_dir
     )
     base_url = f"http://127.0.0.1:{desired_port}"
@@ -877,6 +881,7 @@ def collect_e2e_local_coverage(
     finally:
         # Stop server and all child processes
         stop_server(server_process, desired_port, log_file)
+        log_fp.close()
 
         # Quick sanity check: did we produce any profile data?
         prof_dir = PROJECT_ROOT / "target" / "llvm-cov-target"
@@ -1110,7 +1115,7 @@ def cmd_coverage_combined(args):
 
     # Collect e2e coverage (without cleaning)
     step("Collecting E2E test coverage for combined mode")
-    server_process, log_file, port = start_instrumented_server(
+    server_process, log_file, port, log_fp = start_instrumented_server(
         config_file, output_dir
     )
     base_url = f"http://127.0.0.1:{port}"
@@ -1133,6 +1138,7 @@ def cmd_coverage_combined(args):
 
     finally:
         stop_server(server_process, port, log_file)
+        log_fp.close()
 
     if pytest_rc != 0:
         sys.exit(pytest_rc)
