@@ -181,8 +181,11 @@ pub enum DbError {
     #[error("SQLite pragma error: {0}")]
     SqlitePragma(String),
 
-    #[error("Environment variable error: {0}")]
-    EnvVar(#[from] std::env::VarError),
+    #[error("Environment variable '{name}': {source}")]
+    EnvVar {
+        name: String,
+        source: std::env::VarError,
+    },
 
     #[error("URL parsing error: {0}")]
     UrlParse(#[from] url::ParseError),
@@ -232,11 +235,13 @@ pub enum DbError {
     ConnRequestedInsideTx,
 }
 
-impl From<modkit_utils::env_expand::ExpandEnvError> for DbError {
-    fn from(err: modkit_utils::env_expand::ExpandEnvError) -> Self {
+impl From<modkit_utils::var_expand::ExpandVarsError> for DbError {
+    fn from(err: modkit_utils::var_expand::ExpandVarsError) -> Self {
         match err {
-            modkit_utils::env_expand::ExpandEnvError::Var { source, .. } => Self::EnvVar(source),
-            modkit_utils::env_expand::ExpandEnvError::Regex(msg) => Self::InvalidParameter(msg),
+            modkit_utils::var_expand::ExpandVarsError::Var { name, source } => {
+                Self::EnvVar { name, source }
+            }
+            modkit_utils::var_expand::ExpandVarsError::Regex(msg) => Self::InvalidParameter(msg),
         }
     }
 }

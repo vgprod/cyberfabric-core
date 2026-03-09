@@ -396,7 +396,7 @@ fn merge_module_files(
 /// # Errors
 /// Returns an error if any referenced env var is missing.
 pub fn expand_env_in_dsn(dsn: &str) -> Result<String> {
-    modkit_utils::env_expand::expand_env_vars(dsn).map_err(|e| anyhow::anyhow!("{e}"))
+    modkit_utils::var_expand::expand_env_vars(dsn).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// Resolves password: if it contains ${VAR}, expands from environment variable; otherwise returns as-is.

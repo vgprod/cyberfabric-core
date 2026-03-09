@@ -119,7 +119,7 @@ modules:
           auth_config:
             header: "api-key"
             prefix: ""
-            secret_ref: "cred://azure-openai-key"
+            secret_ref: "cred://${AZURE_API_KEY}"
 
       # ── Azure OpenAI example (uncomment and set your endpoint) ──────────
       #   azure_openai:
@@ -131,7 +131,7 @@ modules:
       #     auth_config:
       #       header: "api-key"
       #       prefix: ""
-      #       secret_ref: "cred://azure-openai-key"
+      #       secret_ref: "cred://${AZURE_API_KEY}"
       #
       # ── Per-tenant Azure example (each tenant has its own endpoint) ─────
       #   azure_openai_tenant_a:

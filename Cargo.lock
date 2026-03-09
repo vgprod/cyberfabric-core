@@ -1501,6 +1501,7 @@ dependencies = [
  "cf-modkit-security",
  "cf-modkit-transport-grpc",
  "inventory",
+ "serde",
  "tokio",
  "tokio-util",
  "tonic",

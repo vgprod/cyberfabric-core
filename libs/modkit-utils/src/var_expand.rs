@@ -6,7 +6,7 @@ use regex::Regex;
 
 /// Error returned by [`expand_env_vars`].
 #[derive(Debug)]
-pub enum ExpandEnvError {
+pub enum ExpandVarsError {
     /// An environment variable referenced by the input is missing or contains invalid Unicode.
     Var {
         name: String,
@@ -16,7 +16,7 @@ pub enum ExpandEnvError {
     Regex(String),
 }
 
-impl std::fmt::Display for ExpandEnvError {
+impl std::fmt::Display for ExpandVarsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Var { name, source } => {
@@ -27,7 +27,7 @@ impl std::fmt::Display for ExpandEnvError {
     }
 }
 
-impl std::error::Error for ExpandEnvError {
+impl std::error::Error for ExpandVarsError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Var { source, .. } => Some(source),
@@ -43,14 +43,14 @@ impl std::error::Error for ExpandEnvError {
 ///
 /// # Errors
 ///
-/// Returns [`ExpandEnvError::Var`] if a referenced environment variable is missing
+/// Returns [`ExpandVarsError::Var`] if a referenced environment variable is missing
 /// or contains invalid Unicode.
-pub fn expand_env_vars(input: &str) -> Result<String, ExpandEnvError> {
+pub fn expand_env_vars(input: &str) -> Result<String, ExpandVarsError> {
     static RE: LazyLock<Result<Regex, String>> =
         LazyLock::new(|| Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").map_err(|e| e.to_string()));
-    let re = RE.as_ref().map_err(|e| ExpandEnvError::Regex(e.clone()))?;
+    let re = RE.as_ref().map_err(|e| ExpandVarsError::Regex(e.clone()))?;
 
-    let mut err: Option<ExpandEnvError> = None;
+    let mut err: Option<ExpandVarsError> = None;
     let result = re.replace_all(input, |caps: &regex::Captures| {
         if err.is_some() {
             return String::new();
@@ -59,7 +59,7 @@ pub fn expand_env_vars(input: &str) -> Result<String, ExpandEnvError> {
         match std::env::var(name) {
             Ok(val) => val,
             Err(e) => {
-                err = Some(ExpandEnvError::Var {
+                err = Some(ExpandVarsError::Var {
                     name: name.to_owned(),
                     source: e,
                 });
@@ -71,6 +71,62 @@ pub fn expand_env_vars(input: &str) -> Result<String, ExpandEnvError> {
         return Err(e);
     }
     Ok(result.into_owned())
+}
+
+/// Trait for types whose `String` fields can be expanded from environment variables.
+///
+/// Typically derived via `#[derive(ExpandVars)]` from `modkit-macros`.
+/// Fields marked with `#[expand_vars]` will have `${VAR}` placeholders
+/// replaced with the corresponding environment variable values.
+///
+/// # Errors
+///
+/// Returns [`ExpandVarsError`] if a referenced environment variable is missing
+/// or contains invalid Unicode.
+pub trait ExpandVars {
+    /// Expand `${VAR}` placeholders in marked fields from environment variables.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExpandVarsError`] if a referenced environment variable is missing
+    /// or contains invalid Unicode.
+    fn expand_vars(&mut self) -> Result<(), ExpandVarsError>;
+}
+
+impl ExpandVars for String {
+    fn expand_vars(&mut self) -> Result<(), ExpandVarsError> {
+        *self = expand_env_vars(self)?;
+        Ok(())
+    }
+}
+
+impl<T: ExpandVars> ExpandVars for Option<T> {
+    fn expand_vars(&mut self) -> Result<(), ExpandVarsError> {
+        if let Some(inner) = self {
+            inner.expand_vars()?;
+        }
+        Ok(())
+    }
+}
+
+impl<T: ExpandVars> ExpandVars for Vec<T> {
+    fn expand_vars(&mut self) -> Result<(), ExpandVarsError> {
+        for item in self {
+            item.expand_vars()?;
+        }
+        Ok(())
+    }
+}
+
+impl<K, V: ExpandVars, S: std::hash::BuildHasher> ExpandVars
+    for std::collections::HashMap<K, V, S>
+{
+    fn expand_vars(&mut self) -> Result<(), ExpandVarsError> {
+        for val in self.values_mut() {
+            val.expand_vars()?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -110,7 +166,7 @@ mod tests {
         temp_env::with_vars([("EXPAND_MISSING_CANARY", None::<&str>)], || {
             let err = expand_env_vars("${EXPAND_MISSING_CANARY}").unwrap_err();
             assert!(
-                matches!(&err, ExpandEnvError::Var { name, .. } if name == "EXPAND_MISSING_CANARY")
+                matches!(&err, ExpandVarsError::Var { name, .. } if name == "EXPAND_MISSING_CANARY")
             );
             let msg = err.to_string();
             assert!(
@@ -130,7 +186,7 @@ mod tests {
             || {
                 let err = expand_env_vars("${EXPAND_FIRST_MISS}_${EXPAND_SECOND_OK}").unwrap_err();
                 assert!(
-                    matches!(&err, ExpandEnvError::Var { name, .. } if name == "EXPAND_FIRST_MISS")
+                    matches!(&err, ExpandVarsError::Var { name, .. } if name == "EXPAND_FIRST_MISS")
                 );
             },
         );

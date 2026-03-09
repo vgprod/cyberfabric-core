@@ -1,6 +1,6 @@
 //! Database connection options and configuration types.
 
-use modkit_utils::env_expand::expand_env_vars;
+use modkit_utils::var_expand::expand_env_vars;
 
 use crate::config::{DbConnConfig, DbEngineCfg, GlobalDatabaseConfig, PoolCfg};
 use crate::{DbError, DbHandle, Result};
@@ -693,7 +693,10 @@ fn parse_sqlite_path_from_dsn(dsn: &str) -> Result<std::path::PathBuf> {
 fn resolve_password(password: &str) -> Result<String> {
     if password.starts_with("${") && password.ends_with('}') {
         let var_name = &password[2..password.len() - 1];
-        Ok(std::env::var(var_name)?)
+        std::env::var(var_name).map_err(|source| DbError::EnvVar {
+            name: var_name.to_owned(),
+            source,
+        })
     } else {
         Ok(password.to_owned())
     }
