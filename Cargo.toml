@@ -227,7 +227,7 @@ modkit-odata-macros = { package = "cf-modkit-odata-macros", version = "0.5.4", p
 modkit-sdk = { package = "cf-modkit-sdk", version = "0.5.4", path = "libs/modkit-sdk" }
 modkit-security = { package = "cf-modkit-security", version = "0.5.4", path = "libs/modkit-security" }
 modkit-transport-grpc = { package = "cf-modkit-transport-grpc", version = "0.5.4", path = "libs/modkit-transport-grpc" }
-modkit-utils = { package = "cf-modkit-utils", version = "0.5.4", path = "libs/modkit-utils" }
+modkit-utils = { package = "cf-modkit-utils", version = "0.5.5", path = "libs/modkit-utils" }
 
 cf-system-sdks = { version = "0.1.24", path = "libs/system-sdks" }
 cf-system-sdk-directory = { version = "0.1.24", path = "libs/system-sdks/sdks/directory" }
