@@ -9,6 +9,70 @@ release-plz updates this file in the Release PR.
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-tr-plugin-v0.1.9...cf-static-tr-plugin-v0.1.10) - 2026-03-14
+
+### Other
+
+- release (by @github-actions[bot]) - #1022
+
+### Contributors
+
+* @github-actions[bot]
+
+## [0.1.7](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-credstore-plugin-v0.1.6...cf-static-credstore-plugin-v0.1.7) - 2026-03-14
+
+### Other
+
+- release (by @github-actions[bot]) - #1022
+
+### Contributors
+
+* @github-actions[bot]
+
+## [0.1.9](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-authz-plugin-v0.1.8...cf-static-authz-plugin-v0.1.9) - 2026-03-14
+
+### Other
+
+- release (by @github-actions[bot]) - #1022
+
+### Contributors
+
+* @github-actions[bot]
+
+## [0.2.0](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-authn-plugin-v0.1.8...cf-static-authn-plugin-v0.2.0) - 2026-03-14
+
+### Added
+
+- *(mini-chat)* use S2S client credentials for OAGW upstream provisioning (by @aviator5)
+- *(authn-resolver)* add S2S authentication via OAuth2 client credentials (by @aviator5)
+
+### Other
+
+- chore(manual release) (by @MikeFalcon77) - #1043
+- release (by @github-actions[bot]) - #1022
+
+### Contributors
+
+* @MikeFalcon77
+* @github-actions[bot]
+* @aviator5
+
+## [0.1.11](https://github.com/cyberfabric/cyberfabric-core/compare/cf-single-tenant-tr-plugin-v0.1.10...cf-single-tenant-tr-plugin-v0.1.11) - 2026-03-14
+
+### Other
+
+- release (by @github-actions[bot]) - #1022
+
+### Contributors
+
+* @github-actions[bot]
+
+## [0.5.5](https://github.com/cyberfabric/cyberfabric-core/compare/cf-modkit-http-v0.5.4...cf-modkit-http-v0.5.5) - 2026-03-14
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.1.10](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-tr-plugin-v0.1.9...cf-static-tr-plugin-v0.1.10) - 2026-03-12
 
 ### Other
