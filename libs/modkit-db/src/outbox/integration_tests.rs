@@ -3627,12 +3627,19 @@ async fn pipeline_single_enqueue_one_delivery() {
             .ok();
     }
 
-    // Brief window for any spurious duplicate deliveries
+    // Verify no duplicate delivery arrives. Wait 200ms and check the counter
+    // hasn't incremented beyond 1. We check the counter directly instead of
+    // notify.notified() because a stale permit from the first delivery's
+    // notify_one() would cause notified().await to resolve immediately.
+    let baseline = counter.load(Ordering::Relaxed);
     tokio::time::sleep(Duration::from_millis(200)).await;
-
     assert_eq!(
         counter.load(Ordering::Relaxed),
-        1,
+        baseline,
+        "no duplicate delivery should occur (counter changed during wait)"
+    );
+    assert_eq!(
+        baseline, 1,
         "single enqueue must produce exactly one delivery"
     );
 

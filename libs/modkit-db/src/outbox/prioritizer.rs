@@ -326,11 +326,23 @@ impl SharedPrioritizer {
     /// Lock-contention is minimal: only the inbox mutex is held, for a
     /// single `push_back`.
     pub fn push_dirty(&self, pid: i64) {
+        self.push_dirty_impl(pid, Instant::now());
+    }
+
+    /// Test-only variant that accepts an explicit timestamp instead of
+    /// `Instant::now()`, allowing tests to bypass coalesce/cooldown
+    /// windows without real sleeps.
+    #[cfg(test)]
+    fn push_dirty_at(&self, pid: i64, dirty_since: Instant) {
+        self.push_dirty_impl(pid, dirty_since);
+    }
+
+    fn push_dirty_impl(&self, pid: i64, dirty_since: Instant) {
         let mut inbox = self
             .inbox
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !inbox.try_push(pid, Instant::now()) {
+        if !inbox.try_push(pid, dirty_since) {
             // Duplicate within coalesce window — skip notification
             return;
         }
@@ -474,7 +486,6 @@ impl Drop for PartitionGuard {
 mod tests {
     use super::*;
     use std::collections::HashSet;
-    use std::thread;
 
     fn make_shared() -> Arc<SharedPrioritizer> {
         Arc::new(SharedPrioritizer::new())
@@ -691,9 +702,16 @@ mod tests {
         let g = sp.take().unwrap();
         g.error(); // error_count = 1
 
-        // Wait for cooldown
-        thread::sleep(Duration::from_millis(250));
-        sp.push_dirty(10);
+        // Move the cooldown-delayed entry to the past so take() can pop it
+        {
+            let mut sched = sp.scheduler.lock().unwrap();
+            let entry = *sched.pending.iter().find(|(_, pid)| *pid == 10).unwrap();
+            sched.pending.remove(&entry);
+            sched.pending.insert((
+                Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
+                10,
+            ));
+        }
         let g2 = sp.take().unwrap();
         g2.processed(); // should reset error_count
 
@@ -720,9 +738,10 @@ mod tests {
     #[test]
     fn skipped_retains_original_priority() {
         let sp = make_shared();
-        sp.push_dirty(10);
-        thread::sleep(Duration::from_millis(2));
-        sp.push_dirty(20);
+        let now = Instant::now();
+        let t0 = now.checked_sub(Duration::from_secs(2)).unwrap();
+        sp.push_dirty_at(10, t0);
+        sp.push_dirty_at(20, t0 + Duration::from_secs(1));
 
         // Take partition 10, skip it
         let g1 = sp.take().unwrap();
@@ -926,11 +945,11 @@ mod tests {
     #[test]
     fn oldest_dirty_served_first() {
         let sp = make_shared();
-        sp.push_dirty(30);
-        thread::sleep(Duration::from_millis(2));
-        sp.push_dirty(10);
-        thread::sleep(Duration::from_millis(2));
-        sp.push_dirty(20);
+        let now = Instant::now();
+        let t0 = now.checked_sub(Duration::from_secs(3)).unwrap();
+        sp.push_dirty_at(30, t0);
+        sp.push_dirty_at(10, t0 + Duration::from_secs(1));
+        sp.push_dirty_at(20, t0 + Duration::from_secs(2));
 
         let g1 = sp.take().unwrap();
         assert_eq!(g1.partition_id(), 30, "oldest dirty should be first");

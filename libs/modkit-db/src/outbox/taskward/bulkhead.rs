@@ -615,7 +615,7 @@ mod tests {
         assert_eq!(shared.available_permits(), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn priority_cancel_during_wait() {
         let guaranteed = Arc::new(Semaphore::new(0));
         let shared = Arc::new(Semaphore::new(0));
@@ -630,7 +630,7 @@ mod tests {
         assert!(bh.acquire(&cancel).await.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn priority_blocks_when_neither_available() {
         let guaranteed = Arc::new(Semaphore::new(0));
         let shared = Arc::new(Semaphore::new(0));

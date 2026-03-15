@@ -301,7 +301,7 @@ impl<A: WorkerAction> WorkerTask<A> {
 mod tests {
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use std::time::Instant;
+    use tokio::time::Instant;
 
     use std::sync::Mutex;
 
@@ -430,7 +430,7 @@ mod tests {
         assert_eq!(worker.notifiers.len(), 3);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn builder_with_poker_adds_notifier() {
         let cancel = CancellationToken::new();
         let action = MockAction::new(vec![]);
@@ -440,7 +440,7 @@ mod tests {
         assert_eq!(worker.notifiers.len(), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn builder_notifier_plus_poker() {
         let cancel = CancellationToken::new();
         let notify = Arc::new(Notify::new());
@@ -479,7 +479,7 @@ mod tests {
 
     // ---- Scheduling Tests ----
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn continue_executes_immediately() {
         let cancel = CancellationToken::new();
         let action = MockAction::new(vec![
@@ -501,7 +501,7 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 4);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn sleep_respects_duration() {
         let cancel = CancellationToken::new();
         let action = MockAction::new(vec![
@@ -523,7 +523,7 @@ mod tests {
         assert!(start.elapsed() >= Duration::from_millis(100));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn sleep_zero_is_immediate() {
         let cancel = CancellationToken::new();
         let action = MockAction::new(vec![
@@ -543,7 +543,7 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn idle_wakes_on_notify() {
         let cancel = CancellationToken::new();
         let notify = Arc::new(Notify::new());
@@ -577,7 +577,7 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(1));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn idle_with_no_notifiers_blocks_until_cancel() {
         let cancel = CancellationToken::new();
         let action = MockAction::new(vec![]);
@@ -597,7 +597,7 @@ mod tests {
         assert!(start.elapsed() < Duration::from_millis(200));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn sleep_ignores_notify() {
         let cancel = CancellationToken::new();
         let notify = Arc::new(Notify::new());
@@ -631,7 +631,7 @@ mod tests {
 
     // ---- Multi-Notifier Tests ----
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn single_notifier_wakes() {
         let cancel = CancellationToken::new();
         let notify = Arc::new(Notify::new());
@@ -659,7 +659,7 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn multiple_notifiers_first_one_wakes() {
         let cancel = CancellationToken::new();
         let n1 = Arc::new(Notify::new());
@@ -697,7 +697,7 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(1));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn zero_notifiers_blocks_until_cancel() {
         let cancel = CancellationToken::new();
         let action = MockAction::new(vec![]);
@@ -714,7 +714,7 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn stored_permit_consumed_immediately() {
         let cancel = CancellationToken::new();
         let notify = Arc::new(Notify::new());
@@ -740,7 +740,7 @@ mod tests {
 
     // ---- Cancellation Tests ----
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn cancel_during_idle() {
         let cancel = CancellationToken::new();
         let notify = Arc::new(Notify::new());
@@ -761,7 +761,7 @@ mod tests {
         assert!(start.elapsed() < Duration::from_millis(150));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn cancel_during_sleep() {
         let cancel = CancellationToken::new();
         let action = MockAction::new(vec![Ok(Directive::sleep(Duration::from_secs(10)))]);
@@ -798,7 +798,7 @@ mod tests {
         assert!(count.load(Ordering::SeqCst) > 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn cancel_visible_in_execute() {
         let cancel = CancellationToken::new();
         let worker = WorkerBuilder::new("test", cancel.clone())
@@ -816,7 +816,7 @@ mod tests {
         worker.run().await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn already_cancelled() {
         let cancel = CancellationToken::new();
         cancel.cancel();
@@ -830,7 +830,7 @@ mod tests {
 
     // ---- Error Absorption Tests ----
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn error_triggers_escalation_and_retry() {
         let cancel = CancellationToken::new();
         let action = MockAction::new(vec![
@@ -851,7 +851,7 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 3);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn error_on_first_call_retries() {
         let cancel = CancellationToken::new();
         let action = MockAction::new(vec![
@@ -871,7 +871,7 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn error_applies_backoff_floor() {
         use crate::outbox::taskward::bulkhead::{
             BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
@@ -912,7 +912,7 @@ mod tests {
         assert!(start.elapsed() >= Duration::from_millis(100));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn consecutive_errors_escalate() {
         use crate::outbox::taskward::bulkhead::{
             BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
@@ -956,7 +956,7 @@ mod tests {
         assert!(start.elapsed() >= Duration::from_millis(70));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn success_resets_bulkhead() {
         use crate::outbox::taskward::bulkhead::{
             BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
@@ -998,7 +998,7 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 5);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn error_sets_directive_to_idle() {
         use crate::outbox::taskward::bulkhead::{
             BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
@@ -1051,7 +1051,7 @@ mod tests {
 
     // ---- Bulkhead Floor Tests ----
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn floor_applied_to_continue() {
         use crate::outbox::taskward::bulkhead::{
             BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
@@ -1093,7 +1093,7 @@ mod tests {
         assert!(start.elapsed() >= Duration::from_millis(100));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn floor_applied_to_idle() {
         use crate::outbox::taskward::bulkhead::{
             BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
@@ -1150,7 +1150,7 @@ mod tests {
         assert!(start.elapsed() >= Duration::from_millis(200));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn floor_applied_to_sleep() {
         use crate::outbox::taskward::bulkhead::{
             BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
@@ -1192,7 +1192,7 @@ mod tests {
         assert!(start.elapsed() >= Duration::from_millis(200));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn floor_does_not_reduce() {
         use crate::outbox::taskward::bulkhead::{
             BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
@@ -1234,7 +1234,7 @@ mod tests {
         assert!(start.elapsed() >= Duration::from_millis(500));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn zero_floor_no_effect() {
         let cancel = CancellationToken::new();
         let action = MockAction::new(vec![
@@ -1259,7 +1259,7 @@ mod tests {
 
     // ---- Semaphore Integration Tests ----
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn semaphore_acquired_before_execute() {
         use crate::outbox::taskward::bulkhead::{
             BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
@@ -1296,7 +1296,7 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn semaphore_blocks_until_released() {
         use crate::outbox::taskward::bulkhead::{
             BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
@@ -1341,7 +1341,7 @@ mod tests {
         assert!(start.elapsed() >= Duration::from_millis(50));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn cancel_during_semaphore_wait() {
         use crate::outbox::taskward::bulkhead::{
             BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit,
@@ -1382,7 +1382,7 @@ mod tests {
 
     // ---- Notify Semantics Tests ----
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn stored_permit() {
         let cancel = CancellationToken::new();
         let notify = Arc::new(Notify::new());
@@ -1405,7 +1405,7 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(1));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn multiple_coalesce() {
         let cancel = CancellationToken::new();
         let notify = Arc::new(Notify::new());
@@ -1467,7 +1467,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn listener_called_on_start_stop() {
         let cancel = CancellationToken::new();
         cancel.cancel();
@@ -1484,7 +1484,7 @@ mod tests {
         assert_eq!(events.last(), Some(&"stop".to_owned()));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn listener_called_on_complete() {
         let cancel = CancellationToken::new();
         let listener = RecordingListener::default();
@@ -1506,7 +1506,7 @@ mod tests {
         assert!(events.contains(&"complete".to_owned()));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn listener_called_on_error_with_context() {
         let cancel = CancellationToken::new();
         let listener = RecordingListener::default();
@@ -1531,7 +1531,7 @@ mod tests {
         assert!(events.contains(&"error".to_owned()));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn multiple_listeners_called_in_order() {
         let cancel = CancellationToken::new();
         cancel.cancel();
