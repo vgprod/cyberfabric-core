@@ -33,7 +33,7 @@ impl<'de> serde::Deserialize<'de> for SecretString {
     where
         D: serde::Deserializer<'de>,
     {
-        String::deserialize(deserializer).map(SecretString::new)
+        <String as serde::Deserialize>::deserialize(deserializer).map(SecretString::new)
     }
 }
 

@@ -19,7 +19,7 @@ workspace = true
 
 [features]
 serde = ["dep:serde"]
-humantime-serde = ["dep:humantime", "dep:serde"]
+humantime-serde = ["serde", "dep:humantime"]
 
 [dependencies]
 serde = { workspace = true, optional = true }
