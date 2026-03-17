@@ -3,9 +3,11 @@
 
 extern crate rustc_ast;
 extern crate rustc_hir;
+extern crate rustc_span;
 
 use clippy_utils::consts::{ConstEvalCtxt, Constant};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_span::Span;
 
 dylint_linting::declare_late_lint! {
     /// DE0205: Operation builder must have tag and summary
@@ -45,11 +47,21 @@ dylint_linting::declare_late_lint! {
 }
 
 impl<'tcx> LateLintPass<'tcx> for De0205OperationBuilder {
+    fn check_stmt(&mut self, cx: &LateContext<'tcx>, stmt: &'tcx rustc_hir::Stmt<'tcx>) {
+        // Check statements for complete builder chains
+        if let rustc_hir::StmtKind::Let(local) = stmt.kind {
+            if let Some(init) = local.init {
+                check_complete_builder_chain(cx, init);
+            }
+        } else if let rustc_hir::StmtKind::Semi(expr) | rustc_hir::StmtKind::Expr(expr) = stmt.kind {
+            check_complete_builder_chain(cx, expr);
+        }
+    }
+
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx rustc_hir::Expr<'tcx>) {
-        // Look for method calls on OperationBuilder instances
+        // Validate tag/summary format when called
         if let rustc_hir::ExprKind::MethodCall(path, receiver, args, _span) = expr.kind {
-            // Check if this is a method call on an OperationBuilder
-            if is_operation_builder_method(cx, receiver) {
+            if is_operation_builder_type(cx, receiver) {
                 let method_name = path.ident.name.as_str();
 
                 match method_name {
@@ -95,11 +107,97 @@ impl<'tcx> LateLintPass<'tcx> for De0205OperationBuilder {
     }
 }
 
-fn is_operation_builder_method(cx: &LateContext<'_>, expr: &rustc_hir::Expr<'_>) -> bool {
-    // Check if the expression resolves to OperationBuilder type
+fn check_complete_builder_chain(cx: &LateContext<'_>, expr: &rustc_hir::Expr<'_>) {
+    // Only check if this expression contains an OperationBuilder constructor
+    if contains_operation_builder_constructor(expr) {
+        let mut has_tag = false;
+        let mut has_summary = false;
+
+        // Walk the expression tree to find tag and summary calls
+        check_builder_chain(expr, &mut has_tag, &mut has_summary);
+
+        // Report missing calls
+        let builder_span = get_builder_constructor_span(expr);
+        if !has_tag || !has_summary {
+            cx.span_lint(DE0205_OPERATION_BUILDER, builder_span, |diag| {
+                match (has_tag, has_summary) {
+                    (false, false) => {
+                        diag.primary_message("operation builder missing .tag() and .summary() calls");
+                        diag.help("add .tag(\"Your Tag\") with properly formatted tag");
+                        diag.note("tags must contain whitespace-separated words, each starting with a capital letter");
+                        diag.help("add .summary(\"Your summary\") with a meaningful description");
+                    }
+                    (false, true) => {
+                        diag.primary_message("operation builder missing .tag() call");
+                        diag.help("add .tag(\"Your Tag\") with properly formatted tag");
+                        diag.note("tags must contain whitespace-separated words, each starting with a capital letter");
+                    }
+                    (true, false) => {
+                        diag.primary_message("operation builder missing .summary() call");
+                        diag.help("add .summary(\"Your summary\") with a meaningful description");
+                    }
+                    (true, true) => {}
+                }
+            });
+        }
+    }
+}
+
+fn contains_operation_builder_constructor(expr: &rustc_hir::Expr<'_>) -> bool {
+    match expr.kind {
+        rustc_hir::ExprKind::Call(func, _) => {
+            if let rustc_hir::ExprKind::Path(qpath) = &func.kind {
+                if let rustc_hir::QPath::TypeRelative(ty, segment) = qpath {
+                    if let rustc_hir::TyKind::Path(rustc_hir::QPath::Resolved(_, path)) = &ty.kind {
+                        let type_str = format!("{:?}", path);
+                        let method_name = segment.ident.name.as_str();
+                        return type_str.contains("OperationBuilder")
+                            && type_str.contains("modkit")
+                            && matches!(method_name, "get" | "post" | "put" | "delete" | "patch" | "head" | "options");
+                    }
+                }
+            }
+            false
+        }
+        rustc_hir::ExprKind::MethodCall(_, receiver, _, _) => {
+            contains_operation_builder_constructor(receiver)
+        }
+        _ => false,
+    }
+}
+
+fn get_builder_constructor_span(expr: &rustc_hir::Expr<'_>) -> Span {
+    match expr.kind {
+        rustc_hir::ExprKind::Call(_, _) => expr.span,
+        rustc_hir::ExprKind::MethodCall(_, receiver, _, _) => {
+            get_builder_constructor_span(receiver)
+        }
+        _ => expr.span,
+    }
+}
+
+fn check_builder_chain(
+    expr: &rustc_hir::Expr<'_>,
+    has_tag: &mut bool,
+    has_summary: &mut bool,
+) {
+    match expr.kind {
+        rustc_hir::ExprKind::MethodCall(path, receiver, _, _) => {
+            let method_name = path.ident.name.as_str();
+            if method_name == "tag" {
+                *has_tag = true;
+            } else if method_name == "summary" {
+                *has_summary = true;
+            }
+            check_builder_chain(receiver, has_tag, has_summary);
+        }
+        _ => {}
+    }
+}
+
+fn is_operation_builder_type(cx: &LateContext<'_>, expr: &rustc_hir::Expr<'_>) -> bool {
     let ty = cx.typeck_results().expr_ty(expr);
     let type_str = format!("{:?}", ty);
-
     type_str.contains("OperationBuilder") && type_str.contains("modkit")
 }
 
