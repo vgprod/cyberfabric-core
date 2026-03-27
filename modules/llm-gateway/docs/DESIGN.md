@@ -33,7 +33,7 @@ The external API follows the [Open Responses](https://www.openresponses.org/) pr
 
 The architecture follows a pass-through design: Gateway normalizes requests and responses but does not interpret content or execute tools. Provider-specific adapters handle translation to/from each provider's native API format into the Open Responses protocol. All external calls route through Outbound API Gateway for credential injection and circuit breaking. Gateway also performs health-based routing using Model Registry metrics — see [ADR-0004](./ADR/0004-cpt-cf-llm-gateway-adr-circuit-breaking.md) for the distinction between infrastructure-level circuit breaking (OAGW) and business-level health routing (Gateway).
 
-The system is horizontally scalable and stateless. No conversation history is stored; consumers provide full context with each request (or reference a previous response via `previous_response_id` for context chaining). The only state is temporary async job tracking, which can be stored in distributed cache.
+The system is horizontally scalable and stateless. No conversation history is stored; consumers provide full context with each request. Server-side response storage (`store`) and conversation continuation (`previous_response_id`) from the Open Responses protocol are not supported — see [ADR-0007](./ADR/0007-cpt-cf-llm-gateway-adr-no-stored-responses.md) for rationale. The only state is temporary async job tracking, which can be stored in distributed cache.
 
 ### 1.2 Architecture Drivers
 
@@ -91,6 +91,7 @@ See [PRD.md](./PRD.md) section 1 "Overview" — Key Problems Solved:
 | `cpt-cf-llm-gateway-adr-circuit-breaking` | Circuit breaking at OAGW + health-based routing at Gateway |
 | `cpt-cf-llm-gateway-adr-open-responses-protocol` | Open Responses protocol for LLM completion requests |
 | `cpt-cf-llm-gateway-adr-image-generation-api` | Responses API with custom CyberFabric extensions for image generation |
+| `cpt-cf-llm-gateway-adr-no-stored-responses` | No support for `store=true` or `previous_response_id` — stateless design preserved |
 
 ### 1.3 Architecture Layers
 
@@ -109,9 +110,9 @@ See [PRD.md](./PRD.md) section 1 "Overview" — Key Problems Solved:
 
 **ID**: `cpt-cf-llm-gateway-principle-stateless`
 
-**ADRs**: `cpt-cf-llm-gateway-adr-stateless`
+**ADRs**: `cpt-cf-llm-gateway-adr-stateless`, `cpt-cf-llm-gateway-adr-no-stored-responses`
 
-Gateway does not store conversation history. Consumer provides full context with each request. Exception: temporary async job state.
+Gateway does not store conversation history. Consumer provides full context with each request. Open Responses `store` parameter is forced to `false`; `previous_response_id` is not supported. Exception: temporary async job state.
 
 #### Pass-through
 
@@ -153,6 +154,14 @@ Gateway does not store provider credentials. Credential injection handled by Out
 
 Full request/response content is not logged due to PII concerns. Only metadata (tokens, latency, model, tenant) is logged.
 
+#### No Stored Responses
+
+**ID**: `cpt-cf-llm-gateway-constraint-no-stored-responses`
+
+**ADRs**: `cpt-cf-llm-gateway-adr-no-stored-responses`
+
+Gateway does not support server-side response storage or conversation continuation. The `store` parameter is accepted but forced to `false`; requests with a non-null `previous_response_id` are rejected with `capability_not_supported`. Consumers must provide full conversation context (input items) with each request. Background job results (async mode) are not affected — they follow the data retention NFR.
+
 ## 3. Technical Architecture
 
 ### 3.1 Domain Model
@@ -168,7 +177,7 @@ The domain model follows the Open Responses protocol. All polymorphic types use 
 **Core Entities**:
 
 *Request/Response (`core/`):*
-- CreateResponseBody — Request to create a response (model, input, instructions, previous_response_id, include, tools, tool_choice, parallel_tool_calls, text, reasoning, temperature, top_p, max_output_tokens, max_tool_calls, presence_penalty, frequency_penalty, top_logprobs, truncation, stream, stream_options, background, store, service_tier, metadata, safety_identifier, prompt_cache_key). additionalProperties: false
+- CreateResponseBody — Request to create a response (model, input, instructions, previous_response_id, include, tools, tool_choice, parallel_tool_calls, text, reasoning, temperature, top_p, max_output_tokens, max_tool_calls, presence_penalty, frequency_penalty, top_logprobs, truncation, stream, stream_options, background, store, service_tier, metadata, safety_identifier, prompt_cache_key). additionalProperties: false. **Note**: `previous_response_id` is not supported (rejected with `capability_not_supported` if non-null); `store` is accepted but forced to `false` — see `cpt-cf-llm-gateway-adr-no-stored-responses`
 - ResponseResource — Response object (id, object: "response", created_at, completed_at, status, incomplete_details, model, previous_response_id, instructions, output, error, tools, tool_choice, truncation, parallel_tool_calls, text, top_p, presence_penalty, frequency_penalty, top_logprobs, temperature, reasoning, usage, max_output_tokens, max_tool_calls, store, background, service_tier, metadata, safety_identifier, prompt_cache_key). Status: queued | in_progress | completed | incomplete | failed. All fields required, additionalProperties: false
 - EmbeddingRequest — Embedding request (model, input, dimensions, encoding_format). Not part of Open Responses — Gateway-specific endpoint
 - EmbeddingResponse — Embedding response (model, data[], usage). Not part of Open Responses — Gateway-specific endpoint
@@ -359,7 +368,7 @@ graph TB
   "model": "string | null",
   "input": "string | Item[] | null",
   "instructions": "string | null",
-  "previous_response_id": "string | null",
+  "previous_response_id": "string | null ⛔ NOT SUPPORTED — rejected if non-null",
   "include": ["reasoning.encrypted_content", "message.output_text.logprobs"],
   "tools": [{"type": "function", "name": "...", "parameters": {}}],
   "tool_choice": "auto | required | none | {type, name}",
@@ -377,7 +386,7 @@ graph TB
   "stream": false,
   "stream_options": {"include_usage": true},
   "background": false,
-  "store": true,
+  "store": "true ⛔ FORCED to false — stored responses not supported",
   "service_tier": "auto",
   "metadata": {},
   "safety_identifier": "string | null",
@@ -428,7 +437,7 @@ graph TB
   },
   "max_output_tokens": null,
   "max_tool_calls": null,
-  "store": true,
+  "store": false,
   "background": false,
   "service_tier": "auto",
   "metadata": {},
@@ -778,7 +787,7 @@ sequenceDiagram
 **Use cases**: `cpt-cf-llm-gateway-usecase-tool-calling-v1`
 **Actors**: `cpt-cf-llm-gateway-actor-consumer`
 
-In the Open Responses protocol, tool calls are represented as `function_call` output items. The consumer provides tool results as `function_call_output` input items in the follow-up request, referencing the previous response via `previous_response_id`.
+In the Open Responses protocol, tool calls are represented as `function_call` output items. The consumer provides tool results as `function_call_output` input items in the follow-up request. Since `previous_response_id` is not supported (see `cpt-cf-llm-gateway-adr-no-stored-responses`), the consumer must include the full conversation context — both the original input items and the function call output items — in the follow-up request.
 
 ```mermaid
 sequenceDiagram
@@ -797,7 +806,7 @@ sequenceDiagram
     OB-->>GW: function_call items
     GW-->>C: ResponseResource (output: [function_call items])
     Note over C: Consumer executes tools
-    C->>GW: POST /responses (previous_response_id, input: [function_call_output items])
+    C->>GW: POST /responses (input: [original items + function_call_output items])
     GW->>OB: Request with tool results
     OB->>P: Request
     P-->>OB: Final response
