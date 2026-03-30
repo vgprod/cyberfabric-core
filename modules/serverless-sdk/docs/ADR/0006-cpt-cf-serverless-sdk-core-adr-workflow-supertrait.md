@@ -106,7 +106,7 @@ than a documentation convention. A single implementing type satisfies both the
 forward-call and compensation obligations, which aligns with the Serverless Runtime's
 invocation model (both paths are standard invocations with different input shapes).
 The required — non-defaulted — `compensate` method enforces that compensation is never
-silently absent from a durable workflow; function authors must explicitly implement it.
+silently absent from a durable workflow; adapter authors must explicitly implement it.
 
 ### Consequences
 
@@ -157,7 +157,7 @@ silently absent from a durable workflow; function authors must explicitly implem
   configuration), which is the natural authoring model for saga rollback.
 * Neutral, because unit-testing compensation in isolation requires a minimal `call`
   implementation on the test struct. Accepted: the overhead is one method stub.
-* Bad, because a function author who wants to add compensation to an existing
+* Bad, because an adapter author who wants to add compensation to an existing
   `FunctionHandler` must refactor to `WorkflowHandler`. Accepted: durable workflow authoring
   is a deliberate architectural choice, not a casual addition.
 

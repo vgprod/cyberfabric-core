@@ -114,8 +114,7 @@ _Baseline: module is new (no prior implementation). All targets apply at first s
   with structured tracing spans and timeline events without requiring SDK consumers to add
   any observability code.
   _Target: a conformant `FunctionHandler` implementation contains zero `tracing` imports, verified by compile-time import audit in CI._
-- **Toolchain stability**: The crate compiles on stable Rust with zero unsafe code.
-  _Target: `cargo check` passes on stable 1.92.0; `cargo clippy` reports zero warnings; `cargo deny` reports zero engine-specific transitive dependencies. All enforced on every CI run._
+- **Toolchain stability**: The crate compiles without unsafe code and with zero engine-specific transitive dependencies, both enforced on every CI run.
 
 ### 1.4 Glossary
 
@@ -125,7 +124,7 @@ _Baseline: module is new (no prior implementation). All targets apply at first s
 | **WorkflowHandler** | A `FunctionHandler` that additionally implements compensation for durable workflow rollback. |
 | **Context** | Read-only invocation metadata (ID, tenant, attempt, deadline) derived from `InvocationRecord`. |
 | **Environment** | Abstraction over configuration and secret access for a handler invocation. |
-| **Compensation** | The rollback contract for durable workflows in CyberFabric. Two layers: function-level compensation is implemented by the function author via `WorkflowHandler::compensate` and invoked by the platform as a standard invocation with a `CompensationInput` payload; step-level compensation (sub-step rollback within a workflow execution) is owned by the executor, not the SDK. |
+| **Compensation** | The rollback contract for durable workflows in CyberFabric. Two layers: function-level compensation is implemented by the adapter author via `WorkflowHandler::compensate` and invoked by the platform as a standard invocation with a `CompensationInput` payload; step-level compensation (sub-step rollback within a workflow execution) is owned by the executor, not the SDK. |
 | **Adapter** | A CyberFabric module that implements `ServerlessRuntime` and drives handlers via this SDK. |
 | **GTS ID** | An opaque Global Type System identifier string; the SDK carries these as `String` without interpretation. |
 | **Timeline Event** | A structured tracing event mapping to `InvocationTimelineEvent` in the runtime domain. |
@@ -140,21 +139,28 @@ _Baseline: module is new (no prior implementation). All targets apply at first s
 
 **ID**: `cpt-cf-serverless-sdk-core-actor-fn-author`
 
-- **Role**: A platform developer who implements `FunctionHandler<I, O>` or `WorkflowHandler<I, O>`
-  to register custom function or workflow logic with the Serverless Runtime.
-- **Needs**: A stable, ergonomic Rust trait contract with typed input/output,
-  access to invocation context, config/secret access, and a clear error model.
+- **Role**: A developer who writes functions or workflows on CyberFabric using an
+  adapter-provided authoring model (e.g., Starlark scripts, Temporal activities). Does
+  not implement SDK traits directly — the adapter mediates between the authoring model
+  and `FunctionHandler<I, O>` / `WorkflowHandler<I, O>`. An indirect stakeholder: their
+  needs inform what adapters must expose, which in turn shapes SDK contracts.
+- **Needs**: A predictable invocation contract (typed I/O, context, error semantics)
+  that adapter authors can surface in the adapter's authoring model.
 
 #### Adapter Developer
 
 **ID**: `cpt-cf-serverless-sdk-core-actor-adapter-dev`
 
 - **Role**: A platform developer building an adapter crate (e.g., Starlark, Temporal).
-  Drives handler execution by calling the SDK traits and using the `trace` module
-  for instrumentation.
-- **Needs**: Stable, well-documented traits they can drive; instrumentation utilities
-  that emit consistent timeline events; clear contracts for how `Context` and
-  `Environment` are populated.
+  Implements the SDK handler contracts (`FunctionHandler`, `WorkflowHandler`) and
+  wires the `trace` module for invocation instrumentation. This is a
+  *development-time* relationship: the adapter developer reads documentation,
+  implements the handler interfaces, and maps engine-specific data into `Context`
+  and `Environment`.
+- **Needs**: Ergonomic, well-documented handler contracts they can implement from
+  the SDK documentation alone; instrumentation utilities that emit consistent
+  timeline events without manual wiring; unambiguous contracts for how `Context`
+  and `Environment` are populated from engine data.
 
 ### 2.2 System Actors
 
@@ -162,14 +168,18 @@ _Baseline: module is new (no prior implementation). All targets apply at first s
 
 **ID**: `cpt-cf-serverless-sdk-core-actor-runtime`
 
-- **Role**: The CyberFabric Serverless Runtime module that owns `InvocationRecord`,
-  manages invocation lifecycle, and routes invocations to adapters. The SDK core
-  is an upstream dependency of adapter crates that the runtime drives.
-- **Needs**: Stable trait contracts that adapters can drive without coupling to engine
-  internals; a consistent error categorisation interface mapping `ServerlessSdkError`
+- **Role**: The CyberFabric Serverless Runtime module
+  (`cpt-cf-serverless-runtime-principle-impl-agnostic`) that owns `InvocationRecord`,
+  manages invocation lifecycle, and routes invocations to adapters. Unlike the
+  Adapter Developer (who implements SDK handler contracts), the runtime is a
+  *structural integration consumer*: it depends directly on SDK-defined types
+  (`Context`, `ServerlessSdkError`) in its own invocation-routing and
+  error-categorisation logic — independently of any particular adapter crate.
+- **Needs**: SDK-defined types that remain structurally stable across minor versions
+  so that the runtime's routing and error-categorisation logic does not require
+  changes when adapters are updated; a consistent mapping from `ServerlessSdkError`
   variants to `RuntimeErrorCategory` for retry and dead-letter routing decisions;
-  structured invocation metadata (`Context`) that maps unambiguously from
-  `InvocationRecord` fields.
+  `Context` fields that map unambiguously and exhaustively from `InvocationRecord`.
 
 ---
 
@@ -177,16 +187,13 @@ _Baseline: module is new (no prior implementation). All targets apply at first s
 
 ### 3.1 Module-Specific Environment Constraints
 
-- This crate is a library (`[lib]`). It has no runtime binary and no database.
-- It must compile on **stable Rust** (workspace `rust-version = "1.92.0"`).
 - It must contain **no unsafe code** (enforced by workspace `unsafe_code = "forbid"`).
 - It must have **no engine-specific dependencies** (no `temporal-sdk`, `starlark`,
   or similar crates) — ever.
-- **Developer experience target** (UX-PRD-001): Target users are Rust developers with
-  intermediate async experience (familiar with `async/await`, trait implementations,
-  and `serde`). A Function Author MUST be able to implement a conformant `FunctionHandler`
-  using only the crate's `rustdoc` and this PRD, without consulting adapter internals
-  or engine documentation.
+- **Developer experience target** (UX-PRD-001): The primary target users are
+  Adapter Developers — platform developers with intermediate async experience. An
+  Adapter Developer MUST be able to implement a conformant `FunctionHandler`
+  using only the SDK documentation and this PRD, without consulting engine documentation.
 
 ---
 
@@ -205,15 +212,11 @@ _Baseline: module is new (no prior implementation). All targets apply at first s
 
 ### 4.2 Out of Scope
 
-- Proc-macro crate (`cf-serverless-sdk-macros`) — future work.
-- Adapter crates (`cf-serverless-sdk-adapter-*`) — future work.
-- Testing utilities crate (`cf-serverless-sdk-testing`) — future work.
-- Workspace `Cargo.toml` member registration — handled at integration time.
-- Cypilot `artifacts.toml` registration — handled at integration time.
-- GTS schema validation or GTS chain parsing.
+- GTS schema validation or GTS chain parsing — schema ownership belongs to the GTS layer.
 - `InvocationStatus` state machine — owned by the runtime.
 - `TenantRuntimePolicy`, `Schedule`, `Trigger`, `Webhook` — owned by the runtime.
-- Any retry policy logic — runtime concern; SDK only exposes `attempt_number`.
+- Retry policy logic — runtime concern; SDK only exposes `attempt_number` to handlers.
+
 
 ---
 
@@ -225,18 +228,20 @@ _Baseline: module is new (no prior implementation). All targets apply at first s
 
 - [x] `p1` - **ID**: `cpt-cf-serverless-sdk-core-fr-handler-trait`
 
-The crate MUST provide an `async` trait `FunctionHandler<I, O>` where `I: DeserializeOwned + Send + 'static`
-and `O: Serialize + Send + 'static`, with a single method `call(&self, ctx: &Context, env: &dyn Environment, input: I) -> Result<O, ServerlessSdkError>`.
+The crate MUST provide an async `FunctionHandler` contract parameterised over typed input `I`
+and typed output `O`. It MUST expose a single invocation method that accepts typed input,
+invocation context, and environment access, and returns a typed result or a `ServerlessSdkError`.
+The exact API surface is specified in `DESIGN.md §3.3`.
 
 - **Rationale**: Provides the typed, adapter-neutral authoring contract for all stateless functions.
-- **Actors**: `cpt-cf-serverless-sdk-core-actor-fn-author`, `cpt-cf-serverless-sdk-core-actor-adapter-dev`
+- **Actors**: `cpt-cf-serverless-sdk-core-actor-adapter-dev`
 
-#### FunctionHandler Send+Sync Bound
+#### FunctionHandler Concurrent-Use Guarantee
 
 - [x] `p1` - **ID**: `cpt-cf-serverless-sdk-core-fr-handler-send-sync`
 
-`FunctionHandler<I, O>` MUST require `Self: Send + Sync + 'static` so handlers can be
-stored in `Arc<dyn ...>` and dispatched across async tasks by adapters.
+`FunctionHandler` implementations MUST be safe to share across concurrent invocations dispatched
+by adapters running on multi-threaded async runtimes.
 
 - **Rationale**: Adapters run on multi-threaded async runtimes; handler instances must be safely shared.
 - **Actors**: `cpt-cf-serverless-sdk-core-actor-adapter-dev`
@@ -247,12 +252,13 @@ stored in `Arc<dyn ...>` and dispatched across async tasks by adapters.
 
 - [x] `p1` - **ID**: `cpt-cf-serverless-sdk-core-fr-workflow-handler-trait`
 
-The crate MUST provide an `async` trait `WorkflowHandler<I, O>` that extends `FunctionHandler<I, O>`
-with a `compensate(&self, ctx: &Context, env: &dyn Environment, input: CompensationInput) -> Result<(), ServerlessSdkError>` method.
+The crate MUST provide a `WorkflowHandler` contract that extends `FunctionHandler` with a
+compensation method accepting invocation context, environment access, and a `CompensationInput`,
+returning success or a `ServerlessSdkError`. The exact API surface is specified in `DESIGN.md §3.3`.
 
 - **Rationale**: Implements the function-level compensation layer of the two-layer saga model
   (`cpt-cf-serverless-runtime-fr-advanced-patterns` BR-133).
-- **Actors**: `cpt-cf-serverless-sdk-core-actor-fn-author`
+- **Actors**: `cpt-cf-serverless-sdk-core-actor-adapter-dev`
 
 #### CompensationInput
 
@@ -270,7 +276,7 @@ Field names and optionality MUST match the runtime's `CompensationContext` schem
 
 - **Rationale**: Compensation handlers need the full context to perform idempotent rollback
   without accessing the runtime domain types.
-- **Actors**: `cpt-cf-serverless-sdk-core-actor-fn-author`
+- **Actors**: `cpt-cf-serverless-sdk-core-actor-adapter-dev`
 
 ### 5.3 Invocation Context
 
@@ -286,23 +292,22 @@ The crate MUST provide a `Context` struct with the following fields:
 - Adapter-supplied: `attempt_number: u32` (1-indexed; the adapter tracks retry count
   independently — the runtime's `InvocationRecord` does not expose an attempt counter,
   though retry count is tracked at the persistence layer).
-- Computed: `deadline: Option<Instant>` derived from `FunctionLimits.timeout_seconds` at
-  invocation start.
+- Computed: `deadline` derived from `FunctionLimits.timeout_seconds` at invocation start.
 
 - **Rationale**: Maps the runtime's invocation record to the minimal SDK surface handlers need.
   Follows `cpt-cf-serverless-runtime-principle-impl-agnostic`: no engine-specific fields.
-- **Actors**: `cpt-cf-serverless-sdk-core-actor-fn-author`
+- **Actors**: `cpt-cf-serverless-sdk-core-actor-adapter-dev`
 
 #### Deadline Helpers
 
 - [x] `p1` - **ID**: `cpt-cf-serverless-sdk-core-fr-deadline-helpers`
 
-`Context` MUST provide `is_deadline_exceeded() -> bool` and `remaining_time() -> Option<Duration>`
-helper methods so handlers can detect and respond to deadline expiry before forced termination.
+`Context` MUST expose helpers so handlers can check whether the deadline has been exceeded
+and query the remaining time before forced termination.
 
 - **Rationale**: Enables handlers to self-terminate cleanly (returning `ServerlessSdkError::Timeout`)
   rather than being killed mid-operation, which could leave partial state.
-- **Actors**: `cpt-cf-serverless-sdk-core-actor-fn-author`
+- **Actors**: `cpt-cf-serverless-sdk-core-actor-adapter-dev`
 
 ### 5.4 Environment
 
@@ -310,13 +315,13 @@ helper methods so handlers can detect and respond to deadline expiry before forc
 
 - [x] `p1` - **ID**: `cpt-cf-serverless-sdk-core-fr-environment-trait`
 
-The crate MUST provide an `Environment` trait with `get_config(key: &str) -> Option<&str>`
-and `get_secret(key: &str) -> Option<&str>`. Adapters supply the implementation populated
-before each invocation.
+The crate MUST provide an `Environment` contract for synchronous key-based access to
+configuration values and secrets. Adapters supply the implementation, populated before
+each invocation. The exact API surface is specified in `DESIGN.md §3.3`.
 
 - **Rationale**: Provides engine-agnostic access to function configuration and credentials
   without coupling to credstore APIs or async resolution inside handler logic.
-- **Actors**: `cpt-cf-serverless-sdk-core-actor-fn-author`, `cpt-cf-serverless-sdk-core-actor-adapter-dev`
+- **Actors**: `cpt-cf-serverless-sdk-core-actor-adapter-dev`
 
 ### 5.5 Error Model
 
@@ -329,13 +334,13 @@ and their documented `RuntimeErrorCategory` mappings:
 
 | Variant | `RuntimeErrorCategory` |
 |---------|------------------------|
-| `UserError(String)` | `NonRetryable` |
-| `InvalidInput(String)` | `NonRetryable` |
+| `UserError` | `NonRetryable` |
+| `InvalidInput` | `NonRetryable` |
 | `Timeout` | `Timeout` |
-| `NotSupported(String)` | `NonRetryable` |
-| `Internal(String)` | `Retryable` |
+| `NotSupported` | `NonRetryable` |
+| `Internal` | `Retryable` |
 
-The enum MUST be `#[non_exhaustive]` to allow future variants without breaking downstream.
+The error type MUST be extensible — future variants MUST NOT break existing consumers.
 
 Variant semantics: `InvalidInput` is for structural or type constraint violations (checked
 before side effects); `UserError` is for business-logic rejections (checked after domain
@@ -349,7 +354,7 @@ adapter when tenant quotas or resource limits are exceeded before or during invo
 model intentionally excludes both because they originate outside handler code.
 
 - **Rationale**: Unambiguous mapping from handler errors to runtime retry and dead-letter routing.
-- **Actors**: `cpt-cf-serverless-sdk-core-actor-fn-author`, `cpt-cf-serverless-sdk-core-actor-adapter-dev`
+- **Actors**: `cpt-cf-serverless-sdk-core-actor-adapter-dev`
 
 ### 5.6 Tracing Instrumentation
 
@@ -357,10 +362,10 @@ model intentionally excludes both because they originate outside handler code.
 
 - [x] `p1` - **ID**: `cpt-cf-serverless-sdk-core-fr-trace-module`
 
-The crate MUST provide a `trace` module with `call_instrumented` and `compensate_instrumented`
-functions that wrap handler invocations in structured `tracing` spans and emit lifecycle events
-mapping to `InvocationTimelineEvent` variants (`started`, `succeeded`, `failed`,
-`compensation_started`, `compensation_completed`, `compensation_failed`).
+The crate MUST provide a `trace` module with adapter-facing instrumentation wrappers that
+wrap handler invocations in structured spans and emit lifecycle events covering: invocation
+start, success, failure, and the compensation equivalents (`compensation_started`,
+`compensation_completed`, `compensation_failed`), mapping to `InvocationTimelineEvent` variants.
 
 - **Rationale**: Enables adapters to emit consistent timeline events without requiring SDK
   consumers to add any observability code.
@@ -370,13 +375,13 @@ mapping to `InvocationTimelineEvent` variants (`started`, `succeeded`, `failed`,
 
 - [x] `p1` - **ID**: `cpt-cf-serverless-sdk-core-fr-no-consumer-tracing`
 
-`FunctionHandler::call` and `WorkflowHandler::compensate` MUST NOT emit any `tracing` events
-or spans directly. All instrumentation is contained in the `trace` module and is
-invisible to SDK consumers.
+Handler invocation and compensation methods MUST NOT emit any observability events or spans
+directly. All instrumentation MUST be contained in the `trace` module and invisible to
+SDK consumers.
 
 - **Rationale**: FunctionHandler implementations remain clean and free of platform-specific observability
   wiring; adapters control the observability boundary.
-- **Actors**: `cpt-cf-serverless-sdk-core-actor-fn-author`
+- **Actors**: `cpt-cf-serverless-sdk-core-actor-adapter-dev`
 
 ---
 
@@ -394,17 +399,7 @@ The crate MUST NOT introduce any direct or transitive dependency on engine-speci
 - **Threshold**: Zero engine-specific crates in the dependency tree.
 - **Rationale**: Enforces `cpt-cf-serverless-runtime-principle-impl-agnostic`; prevents
   accidental coupling that would break adapter portability.
-- **Verification Method**: Automated `cargo tree` audit in CI; dependency policy review on every PR.
 
-#### Stable Rust Compatibility
-
-- [x] `p1` - **ID**: `cpt-cf-serverless-sdk-core-nfr-stable-rust`
-
-The crate MUST compile without errors on the workspace minimum stable Rust version
-(`rust-version = "1.92.0"`) with no nightly features.
-
-- **Threshold**: `cargo check` passes on stable 1.92.0.
-- **Rationale**: Function and workflow authors should not need to manage toolchain versions.
 
 #### Zero Unsafe Code
 
@@ -423,16 +418,12 @@ workspace lint configuration).
 The SDK's contribution to per-handler-invocation overhead MUST be minimal and predictable
 for production async workloads.
 
-- **Threshold**: `call_instrumented` MUST NOT introduce blocking I/O or synchronous
-  computation beyond one `Box<dyn Future>` allocation (from the async trait mechanism;
-  see DESIGN.md for rationale) and one
-  `tracing` span emission per call. No additional heap allocations on the hot path beyond
-  those two.
+- **Threshold**: The SDK's per-invocation instrumentation path MUST NOT introduce blocking I/O
+  or synchronous computation. Overhead is limited to the async dispatch mechanism and one
+  structured span emission per call (see DESIGN.md for rationale).
 - **Rationale**: The SDK is on the critical invocation path for all adapters; latency overhead
-  accumulates across high-frequency workloads. The `async-trait` boxing cost is accepted
-  (see §12 Risks); additional overhead is not.
-- **Verification Method**: Criterion benchmark measuring `call_instrumented` round-trip
-  overhead; reviewed before each release.
+  accumulates across high-frequency workloads.
+- **Verification Method**: Manual review of per-invocation overhead before each release; no automated benchmark currently exists.
 
 #### Public API Documentation
 
@@ -443,30 +434,26 @@ purpose, usage, and any invariants or panics.
 
 - **Threshold**: `cargo doc --no-deps` produces zero missing-documentation warnings;
   enforced by `#![deny(missing_docs)]` in CI.
-- **Rationale**: Function Authors and Adapter Developers must be able to understand and
-  implement the SDK contract from the documentation alone, without consulting DESIGN.md
-  or engine internals. Aligns with UX-PRD-001 developer-experience target.
+- **Rationale**: Adapter Developers must be able to understand and implement the SDK
+  contract from the documentation alone, without consulting DESIGN.md or engine
+  internals. Aligns with UX-PRD-001 developer-experience target.
 - **Verification Method**: `cargo doc --no-deps` in CI; zero missing-doc warnings.
 
 #### Authoring Ergonomics
 
 - [ ] `p2` - **ID**: `cpt-cf-serverless-sdk-core-nfr-authoring-ergonomics`
 
-Function and workflow authors MUST be able to implement `FunctionHandler<I, O>` and
-`WorkflowHandler<I, O>` using plain `async fn` syntax with no explicit lifetime
-annotations, no manual `Pin<Box<dyn Future>>` return types, and no boilerplate beyond
-the `impl` block itself.
+Adapter Developers MUST be able to implement `FunctionHandler` and `WorkflowHandler`
+without knowledge of the SDK's internal async dispatch mechanism. The handler contracts
+MUST NOT impose async machinery boilerplate on the implementor beyond writing the handler
+logic itself. The concrete ergonomics constraints are specified in `DESIGN.md §3.3`.
 
-- **Threshold**: Any `impl FunctionHandler` or `impl WorkflowHandler` block that requires
-  explicit lifetime parameters on the `call` or `compensate` method signature is a
-  violation of this NFR.
-- **Rationale**: The SDK's value proposition is that function authors focus on business
-  logic, not Rust async machinery. If implementing the handler trait requires knowledge
-  of RPITIT lifetime elision rules or manual `Future` pinning, the trait imposes an
-  unjustified cognitive burden on the primary audience.
-- **Verification Method**: SDK examples and integration tests must compile with
-  `async fn call(...)` / `async fn compensate(...)` syntax; CI fails if any handler
-  impl requires explicit `impl Future` or lifetime annotation on the method signature.
+- **Rationale**: The SDK's value proposition is that Adapter Developers focus on handler
+  dispatch logic, not the underlying async infrastructure. Leaking internal dispatch
+  concerns into the implementation contract undermines the developer experience target
+  (UX-PRD-001).
+- **Verification Method**: SDK examples and integration tests compile without requiring
+  knowledge of the async dispatch mechanism; reviewed on every PR that touches handler contracts.
 
 ### 6.2 NFR Exclusions
 
@@ -533,7 +520,7 @@ requirements in these areas is deliberate, not an omission.
 - **Type**: Rust module (`trace`) with free functions
 - **Stability**: unstable
 - **Description**: Adapter-facing instrumentation wrappers. Not intended for direct use
-  by function authors.
+  by adapter authors outside the trace module boundary.
 - **Breaking Change Policy**: Minor version bump for signature changes.
 
 ### 7.2 External Integration Contracts
@@ -559,35 +546,36 @@ requirements in these areas is deliberate, not an omission.
 
 ## 8. Use Cases
 
-#### Author Implements a FunctionHandler
+#### Adapter Developer Implements a FunctionHandler
 
 - [x] `p1` - **ID**: `cpt-cf-serverless-sdk-core-usecase-impl-handler`
 
-**Actor**: `cpt-cf-serverless-sdk-core-actor-fn-author`
+**Actor**: `cpt-cf-serverless-sdk-core-actor-adapter-dev`
 
 **Preconditions**:
-- `cf-serverless-sdk-core` is a Cargo dependency of the function crate.
+- `cf-serverless-sdk-core` is a dependency of the adapter crate.
 - The function's `IOSchema.params` and `IOSchema.returns` are known.
 
 **Main Flow**:
-1. Author defines Rust structs for input `I` and output `O` with `serde` derives.
-2. Author implements `FunctionHandler<I, O>` on their handler struct.
-3. `call` receives a typed `I`, reads `ctx` for invocation metadata and `env` for
-   config/secrets, and returns `Result<O, ServerlessSdkError>`.
-4. Adapter discovers the handler, deserialises params into `I`, calls
-   `trace::call_instrumented`, receives `Result<O, _>`, and persists the result.
+1. Adapter Developer defines typed input and output types for the function.
+2. Adapter Developer implements `FunctionHandler` on a handler struct, bridging the
+   engine's execution model (e.g., wrapping a Starlark interpreter or Temporal activity).
+3. The `FunctionHandler` receives typed input, reads invocation context and environment,
+   and returns a typed result or a `ServerlessSdkError`.
+4. The adapter deserialises params, dispatches the `FunctionHandler` via the instrumentation
+   wrapper, and persists the result.
 
 **Postconditions**:
-- `InvocationRecord.result` contains the serialised `O`.
-- A `serverless.handler.call` span with `succeeded` event is emitted.
+- `InvocationRecord.result` contains the serialised output.
+- An invocation span with `succeeded` event is emitted.
 
 **Alternative Flows**:
-- **FunctionHandler returns `Err(UserError)`**: `InvocationRecord.error` is set with
+- **`FunctionHandler` returns `UserError`**: `InvocationRecord.error` is set with
   `RuntimeErrorCategory::NonRetryable`; no retry is attempted.
-- **FunctionHandler returns `Err(Internal)`**: `RuntimeErrorCategory::Retryable`; runtime
+- **`FunctionHandler` returns `Internal`**: `RuntimeErrorCategory::Retryable`; runtime
   may retry per the function's `RetryPolicy`.
-- **Deadline exceeded**: FunctionHandler calls `ctx.is_deadline_exceeded()`, returns
-  `Err(Timeout)`; mapped to `RuntimeErrorCategory::Timeout`.
+- **Deadline exceeded**: `FunctionHandler` checks deadline via context, returns `Timeout`;
+  mapped to `RuntimeErrorCategory::Timeout`.
 
 #### Adapter Developer Wires SDK into an Adapter Crate
 
@@ -596,39 +584,39 @@ requirements in these areas is deliberate, not an omission.
 **Actor**: `cpt-cf-serverless-sdk-core-actor-adapter-dev`
 
 **Preconditions**:
-- `cf-serverless-sdk-core` is a Cargo dependency of the adapter crate.
+- `cf-serverless-sdk-core` is a dependency of the adapter crate.
 - The adapter has access to an `InvocationRecord` and the runtime's `CompensationContext`.
 
 **Main Flow**:
 1. Adapter constructs a `Context` by mapping fields from `InvocationRecord` and `InvocationObservability`.
-2. Adapter implements the `Environment` trait, pre-fetching config and secret values before invocation.
-3. Adapter resolves the handler instance (`Arc<dyn FunctionHandler<I, O>>`) for the requested function.
-4. Adapter calls `trace::call_instrumented(handler, &ctx, &env, input)` to dispatch the invocation with automatic tracing.
-5. Adapter receives `Result<O, ServerlessSdkError>`, maps the error variant to `RuntimeErrorCategory`, and persists the result in `InvocationRecord`.
+2. Adapter implements `Environment`, pre-fetching config and secret values before invocation.
+3. Adapter resolves the handler instance for the requested function.
+4. Adapter dispatches the invocation through the instrumentation wrapper for automatic tracing.
+5. Adapter receives the result or error, maps the error variant to `RuntimeErrorCategory`, and persists the outcome in `InvocationRecord`.
 
 **Postconditions**:
 - `InvocationRecord` is updated with the serialised result or mapped error category.
-- Lifecycle span events are emitted via the `tracing` subscriber without any handler-side code.
+- Lifecycle span events are emitted without any handler-side code.
 
 **Alternative Flows**:
-- **Compensation trigger**: Adapter constructs `CompensationInput` from `CompensationContext` and calls
-  `trace::compensate_instrumented` on a `WorkflowHandler` instance.
+- **Compensation trigger**: Adapter constructs `CompensationInput` from `CompensationContext` and dispatches
+  it through the compensation instrumentation wrapper on a `WorkflowHandler` instance.
 
 ---
 
-#### Author Implements Workflow Compensation
+#### Adapter Developer Implements Workflow Compensation
 
 - [x] `p1` - **ID**: `cpt-cf-serverless-sdk-core-usecase-impl-compensation`
 
-**Actor**: `cpt-cf-serverless-sdk-core-actor-fn-author`
+**Actor**: `cpt-cf-serverless-sdk-core-actor-adapter-dev`
 
 **Preconditions**:
-- Author has a `WorkflowHandler<I, O>` implementation.
+- Adapter Developer has a `WorkflowHandler` implementation.
 - Workflow failed or was canceled; `CompensationInput` is available.
 
 **Main Flow**:
-1. Adapter calls `trace::compensate_instrumented(handler, ctx, env, input)`.
-2. `compensate` checks `input.original_workflow_invocation_id` for idempotency.
+1. Adapter dispatches the `WorkflowHandler` via the compensation instrumentation wrapper.
+2. The `WorkflowHandler` checks `input.original_workflow_invocation_id` for idempotency.
 3. Reads `input.failed_step_id` to determine rollback scope.
 4. Reads `input.workflow_state_snapshot` for completed-step outputs needed for reversal.
 5. Performs rollback operations (e.g., refund payment, release inventory).
@@ -659,7 +647,7 @@ requirements in these areas is deliberate, not an omission.
       implementation.
 - [ ] `trace::compensate_instrumented` emits `compensation_started`, `compensation_completed`,
       and `compensation_failed` lifecycle span events without any `tracing` import in the
-      workflow handler implementation.
+      `WorkflowHandler` implementation.
 
 ---
 
@@ -695,7 +683,7 @@ requirements in these areas is deliberate, not an omission.
 | Risk | Impact | Mitigation |
 |------|--------|------------|
 | Trait signature changes break downstream handlers | High — any `FunctionHandler` impl stops compiling | Keep crate at 0.x; communicate breaking changes via semver major bump |
-| Engine-specific dep accidentally introduced via transitive pull | High — violates `cpt-cf-serverless-sdk-core-nfr-no-engine-deps` | `cargo deny` CI gate; minimal dependency surface |
+| Engine-specific dep accidentally introduced via transitive pull | High — violates `cpt-cf-serverless-sdk-core-nfr-no-engine-deps` | Manual PR review; minimal dependency surface |
 | `async-trait` boxing overhead at cold-path invocations | Low — per-invocation allocation in already-async context | Acceptable trade-off for stable ergonomics; revisit when RPITIT Send bound stabilises fully |
 
 ---

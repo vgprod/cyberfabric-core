@@ -66,7 +66,7 @@ Which interface should the `Environment` trait expose?
   developer experience and CI correctness.
 * **[P2]** FunctionHandler implementations must remain free of async fetching boilerplate inside
   `call` (`cpt-cf-serverless-sdk-core-nfr-authoring-ergonomics`) — ergonomics requirement;
-  reduces implementation errors and cognitive burden on function authors.
+  reduces implementation errors and cognitive burden on adapter authors.
 * **[P3]** The platform design assumes that secret requirements are declared in the function
   definition's deployment configuration, making the full set of required secrets known
   before the handler is called; eager loading is therefore feasible — validates Option A's
