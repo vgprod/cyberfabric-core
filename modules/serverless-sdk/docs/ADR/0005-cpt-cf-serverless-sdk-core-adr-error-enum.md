@@ -53,7 +53,7 @@ STANDARDS ALIGNMENT:
 `Result<O, ServerlessSdkError>`. The error type must satisfy two requirements that
 are in tension:
 
-1. **Handler ergonomics**: function authors must be able to return meaningful error
+1. **Handler ergonomics**: adapter authors must be able to return meaningful error
    information (business error, invalid input, timeout, internal failure) without
    depending on adapter or runtime types.
 2. **Adapter contract**: the adapter must translate the returned error into a
@@ -69,7 +69,7 @@ Four structural approaches exist:
 3. **`anyhow::Error`** — an opaque, context-chain-carrying error type widely used in
    Rust applications.
 4. **Trait-based hierarchy** — a `ServerlessError` trait with an associated
-   `category()` method; function authors implement the trait for their error types.
+   `category()` method; adapter authors implement the trait for their error types.
 
 Which approach should the SDK use for `ServerlessSdkError`?
 
@@ -101,7 +101,7 @@ Which approach should the SDK use for `ServerlessSdkError`?
   cannot distinguish error categories without convention (e.g., downcasting to
   well-known types).
 * **Option D**: Rich trait-based error hierarchy — a `ServerlessError` trait with a
-  `category() -> RuntimeErrorCategory` method; function authors implement the trait
+  `category() -> RuntimeErrorCategory` method; adapter authors implement the trait
   for their domain error types.
 
 ## Decision Outcome
@@ -125,7 +125,7 @@ without over-engineering a hierarchy for a bounded error space.
 * The `?` operator works with `ServerlessSdkError` via `From` implementations that
   authors add in their own crate (e.g., `impl From<MyDomainError> for ServerlessSdkError`).
   The SDK itself does not provide blanket `From` impls, because the correct variant
-  mapping is domain-specific knowledge that only the function author holds.
+  mapping is domain-specific knowledge that only the adapter author holds.
 * Adapters `match` on `ServerlessSdkError` variants with an exhaustive (plus `#[non_exhaustive]`
   catch-all) pattern to determine `RuntimeErrorCategory`. The mapping table in DESIGN.md
   §3.1 is the authoritative reference; adapters must implement it exactly.
@@ -163,7 +163,7 @@ Five named variants; each maps to a documented `RuntimeErrorCategory`.
 * Good, because `thiserror` is already a workspace dependency — zero new crate surface.
 * Good, because each variant's semantics are documented in the SDK, making the error
   contract discoverable without reading adapter or runtime source.
-* Neutral, because function authors must explicitly map domain errors to SDK variants.
+* Neutral, because adapter authors must explicitly map domain errors to SDK variants.
   Accepted: the boundary is the right place to do this mapping.
 * Bad, because adding a new category (e.g., `RateLimit`) requires a new variant and
   a corresponding adapter update. Mitigated by `#[non_exhaustive]` catch-all requirement.
@@ -172,14 +172,14 @@ Five named variants; each maps to a documented `RuntimeErrorCategory`.
 
 The `Result` error type is a trait object; category determined by adapter inspection.
 
-* Good, because function authors return any `std::error::Error` implementation directly,
+* Good, because adapter authors return any `std::error::Error` implementation directly,
   with no wrapping or mapping required.
 * Good, because the SDK introduces no new type; `Box<dyn Error + Send + Sync>` is standard Rust.
 * Bad, because the adapter has no deterministic way to determine `RuntimeErrorCategory`
   from an arbitrary `dyn Error`. Any convention (e.g., checking `Display` strings,
   downcasting to known types) is fragile and non-exhaustive.
 * Bad, because retry behaviour becomes dependent on the adapter's inspection logic rather
-  than the function author's explicit intent — a correctness risk for the platform.
+  than the adapter author's explicit intent — a correctness risk for the platform.
 * Bad, because `Box<dyn Error>` does not convey any retry or categorisation semantics;
   the adapter contract between SDK and runtime is implicit rather than typed.
 
@@ -187,14 +187,14 @@ The `Result` error type is a trait object; category determined by adapter inspec
 
 An opaque, context-chain-carrying error type.
 
-* Good, because `anyhow` is widely used in Rust applications; function authors who
+* Good, because `anyhow` is widely used in Rust applications; adapter authors who
   already use `anyhow` can return errors with no conversion.
 * Good, because context chains (`with_context`) produce rich error messages for logs.
 * Bad, because `anyhow::Error` is opaque — adapters cannot determine `RuntimeErrorCategory`
   without downcasting to concrete types, which requires knowing all possible error types
   in advance (defeating the purpose of opaque errors).
 * Bad, because adding `anyhow` as a dependency of the SDK core crate makes it a
-  mandatory transitive dependency for every function author and adapter — a non-trivial
+  mandatory transitive dependency for every adapter author and adapter — a non-trivial
   addition for a `no_std`-adjacent or minimal-dependency deployment.
 * Bad, because the SDK's minimal-surface principle (`cpt-cf-serverless-sdk-core-principle-minimal-surface`)
   is violated: `anyhow` brings a full error context chain infrastructure to a crate that
@@ -203,17 +203,17 @@ An opaque, context-chain-carrying error type.
 ### Option D: Rich trait-based error hierarchy
 
 A `ServerlessError` trait with a `category() -> RuntimeErrorCategory` method;
-function authors implement the trait.
+adapter authors implement the trait.
 
-* Good, because function authors retain their domain error types and add a trait impl —
+* Good, because adapter authors retain their domain error types and add a trait impl —
   no conversion or wrapping at the handler boundary.
 * Good, because adapters call `err.category()` for a deterministic, author-supplied
   category — no inspection needed.
 * Bad, because `RuntimeErrorCategory` must be defined in the SDK crate for the trait
   to reference it, exposing an adapter-internal concept (`Retryable`, `NonRetryable`,
-  `ResourceLimit`, `Canceled`) to function authors. This couples handler authoring to
+  `ResourceLimit`, `Canceled`) to adapter authors. This couples handler authoring to
   adapter runtime concepts, violating `cpt-cf-serverless-sdk-core-principle-impl-agnostic`.
-* Bad, because function authors must implement a SDK trait on their domain error types —
+* Bad, because adapter authors must implement a SDK trait on their domain error types —
   more boilerplate than returning a named variant.
 * Bad, because the minimal-surface principle is violated: a new public trait is added
   to satisfy a use case (preserving domain error types at the handler boundary) that
@@ -251,7 +251,7 @@ merely at log time.
 | Trigger | Action |
 |---------|--------|
 | The Serverless Runtime introduces a new `RuntimeErrorCategory` value (e.g., `RateLimit` as a distinct category from `ResourceLimit`) | Add a corresponding `ServerlessSdkError` variant; this requires a semver-compatible minor release and adapter updates |
-| A significant proportion of function authors report friction converting domain errors to SDK variants | Re-evaluate Option D (trait-based hierarchy) or introduce a `ServerlessSdkError::from_error(category, source)` convenience constructor |
+| A significant proportion of adapter authors report friction converting domain errors to SDK variants | Re-evaluate Option D (trait-based hierarchy) or introduce a `ServerlessSdkError::from_error(category, source)` convenience constructor |
 | `anyhow` or `eyre` becomes a workspace-wide standard error crate | Re-evaluate Option C; assess whether category-carrying context extensions can satisfy the adapter contract deterministically |
 
 ## Traceability

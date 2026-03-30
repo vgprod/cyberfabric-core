@@ -54,7 +54,7 @@ from `call` and `compensate` to be `+ Send`. Rust stable does not provide automa
 `+ Send` bounds on `Future`s returned from `async fn` in traits.
 
 Which approach should be used to define async trait methods with `+ Send` Future
-guarantees, while keeping the implementation ergonomic for function authors and
+guarantees, while keeping the implementation ergonomic for adapter authors and
 compatible with stable Rust?
 
 ## Decision Drivers
@@ -148,7 +148,7 @@ fn call<'a>(
 * Bad, because trait objects `dyn FunctionHandler<I, O>` are **not** object-safe with RPITIT methods,
   preventing adapters from storing `Box<dyn FunctionHandler<I, O>>`.
 * Bad, because the explicit lifetime on the return position is non-obvious and error-prone
-  for function authors unfamiliar with RPITIT semantics.
+  for adapter authors unfamiliar with RPITIT semantics.
 
 ### Option C: `dynosaur` crate
 

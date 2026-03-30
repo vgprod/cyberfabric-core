@@ -78,13 +78,14 @@ DESIGN LANGUAGE:
 `cf-serverless-sdk-core` is a pure Rust library that defines the stable, engine-agnostic
 authoring contract for CyberFabric serverless functions and workflows. It has no runtime
 state, no I/O, and no external service dependencies. Its entire surface is a set of Rust
-traits and value types that adapter crates drive and function authors implement.
+traits and value types that adapter crates implement and drive.
 
 The design organises the public surface into five concern-separated modules (`context`,
 `environment`, `error`, `handler`, `workflow`) with a sixth adapter-only module (`trace`)
 that isolates all observability wiring. The module boundaries enforce a strict separation:
-function authors interact only with the five core modules; adapter developers additionally
-use `trace`. No module references an engine-specific type.
+adapter developers implement against the five core modules and additionally use `trace`.
+Function authors interact with the platform only through the adapter's authoring model —
+never directly with this crate. No module references an engine-specific type.
 
 The `async-trait` crate is used for the handler and workflow traits, making them ergonomic
 to implement and ensuring the `Future` returned from `call` and `compensate` is `+ Send`
@@ -308,7 +309,7 @@ Adapters use this mapping to produce the correct `RuntimeErrorPayload` from a
 | `NotSupported(msg)` | `NonRetryable` | adapter-defined |
 | `Internal(msg)` | `Retryable` | adapter-defined |
 
-**Variant semantics for function authors** — both `UserError` and `InvalidInput` are `NonRetryable`; the distinction is:
+**Variant semantics for adapter authors** — both `UserError` and `InvalidInput` are `NonRetryable`; the distinction is:
 - `InvalidInput` — the request violates a structural or type constraint that the handler checked (e.g., a required field is absent, a value is out of allowed range). Return this *before* any side effects.
 - `UserError` — the request is structurally valid but rejected by business logic (e.g., insufficient funds, duplicate resource, forbidden action for the caller's state). Return this after business rules are evaluated.
 
@@ -325,7 +326,7 @@ All public types in this crate that may gain fields or variants in future semver
 releases are declared `#[non_exhaustive]`. The table below is the authoritative reference
 for which types carry this attribute and what it means for each consumer role.
 
-| Type | `#[non_exhaustive]` | Impact on function authors | Impact on adapter authors |
+| Type | `#[non_exhaustive]` | Impact on adapter authors | Impact on adapter authors |
 |------|---------------------|--------------------------|--------------------------|
 | `ServerlessSdkError` | Yes (enum) | `match` must include a `_` catch-all arm | `match` must include a `_` catch-all arm; no compile-time signal exists for new variants — adapter maintainers must consult DESIGN.md §3.1 when updating the SDK dependency |
 | `CompensationInput` | Yes (struct) | Field access by name is stable; struct literal construction outside the crate is forbidden | Adapter constructs `CompensationInput` via `CompensationInput::new(trigger, original_workflow_invocation_id, failed_step_id, failed_step_error, workflow_state_snapshot, timestamp, function_id, original_input, tenant_id, correlation_id, started_at)` — a `pub fn new(...)` constructor defined in the crate |
@@ -527,7 +528,7 @@ OpenTelemetry (adapter/platform concern), structured log routing, metrics.
 ##### Access control
 
 `trace.rs` is `pub` but is designated **adapter-only** by convention and documentation.
-No Rust visibility modifier prevents function authors from calling `call_instrumented` or
+No Rust visibility modifier prevents adapter authors from calling `call_instrumented` or
 `compensate_instrumented` directly; however, doing so would duplicate spans and emit
 incorrect lifecycle events (a second `started` event for an already-running invocation).
 

@@ -43,7 +43,7 @@ input. This means two valid approaches exist for the `compensate` method signatu
 1. **Structured input**: `compensate` receives a dedicated `CompensationInput` struct
   populated by the adapter from the `CompensationContext` JSON.
 2. **Generic input**: `compensate` receives the same generic `I` type as `call`, requiring
-  the function author to declare their compensation handler's input type as a
+  the adapter author to declare their compensation handler's input type as a
    `CompensationContext`-compatible struct.
 
 Which approach should the `compensate` method use?
@@ -57,7 +57,7 @@ Which approach should the `compensate` method use?
   the two is a correctness hazard.
 - **[P2]** The adapter must construct `CompensationInput` from the runtime's JSON envelope
   regardless; the question is whether that struct is defined in this crate or by the
-  function author — the platform owns the envelope's shape, so the SDK should own the type.
+  adapter author — the platform owns the envelope's shape, so the SDK should own the type.
 - **[P2]** Function authors should not need to re-declare a `CompensationContext`-compatible
   struct to implement compensation — reduces boilerplate and eliminates the risk of
   incompatible author-defined structs.
@@ -71,7 +71,7 @@ Which approach should the `compensate` method use?
 - **Option A**: Structured `CompensationInput` type — the SDK defines a concrete
 `CompensationInput` struct with all `CompensationContext` fields; `compensate` receives it.
 - **Option B**: Generic input via `I` — `compensate` receives the same generic `I` as `call`;
-the function author defines `I` to be deserializable from `CompensationContext`.
+the adapter author defines `I` to be deserializable from `CompensationContext`.
 - **Option C**: Separate `CompensationHandler<C>` trait — compensation is a standalone trait
 independent of `WorkflowHandler`; `C` is the compensation input type chosen by the author.
 
@@ -120,7 +120,7 @@ from the runtime's `CompensationContext` schema.
 
 The SDK defines `CompensationInput` to match the runtime's `CompensationContext` envelope.
 
-- Good, because the compensation input type is owned by the platform — function authors
+- Good, because the compensation input type is owned by the platform — adapter authors
 cannot accidentally define an incompatible struct.
 - Good, because all compensation-relevant fields (`trigger`, `original_invocation_id`,
 `workflow_state_snapshot`, etc.) are always present and named consistently.
@@ -128,7 +128,7 @@ cannot accidentally define an incompatible struct.
 making the idempotency and rollback-scope guidance concrete.
 - Good, because `CompensationInput` is shared across all workflow handlers — one place to
 update when the runtime's `CompensationContext` schema evolves.
-- Neutral, because the function author has no control over compensation input type — some
+- Neutral, because the adapter author has no control over compensation input type — some
 may prefer to define their own. Acceptable: the platform owns the envelope.
 - Bad, because a workflow whose business input happens to be `CompensationContext`-shaped
 cannot unify `call` and `compensate` behind a single `I`. Edge case; not a realistic scenario.
