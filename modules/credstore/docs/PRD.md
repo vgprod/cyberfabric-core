@@ -20,7 +20,8 @@
   - [5.1 P1 — Core Operations](#51-p1--core-operations)
   - [5.2 P1 — Hierarchical Sharing](#52-p1--hierarchical-sharing)
   - [5.3 P1 — Authorization](#53-p1--authorization)
-  - [5.4 P2 — Planned](#54-p2--planned)
+  - [5.4 P1 — Encryption & Key Management](#54-p1--encryption--key-management)
+  - [5.5 P2 — Planned](#55-p2--planned)
 - [6. Non-Functional Requirements](#6-non-functional-requirements)
   - [6.1 Module-Specific NFRs](#61-module-specific-nfrs)
 - [7. Public Library Interfaces](#7-public-library-interfaces)
@@ -163,13 +164,14 @@ Additionally, the platform runs in multiple environments: Kubernetes (where an e
 - Service-to-service retrieval with explicit tenant_id (for OAGW)
 - Gateway + Plugin architecture with runtime backend selection
 - VendorA Credstore REST plugin (P1)
+- Credentials Storage microservice plugin with encrypted storage and schema validation (P1)
+- Pluggable tenant key management via `KeyProvider` abstraction — local DB default, optional external KMS (P1)
 - OS-protected storage plugin (P2)
 - Module-level authorization enforcement (read vs write)
 
 ### 4.2 Out of Scope
 
 - Full Credstore RAML API parity (only subset needed)
-- Encryption key management (delegated to backend)
 - Automatic secret rotation or expiration
 - Secret versioning or history
 - Cross-tenant secret transfer (secrets cannot change ownership)
@@ -328,7 +330,20 @@ Authorization **MUST** be enforced in the gateway layer, not in plugins. Plugins
 **Actors**: `cpt-cf-credstore-actor-platform-module`
 <!-- cpt-cf-id-content -->
 
-### 5.4 P2 — Planned
+### 5.4 P1 — Encryption & Key Management
+
+#### External Key Management
+
+- [ ] `p1` - **ID**: `cpt-cf-credstore-fr-external-key-mgmt`
+
+<!-- cpt-cf-id-content -->
+The Credentials Storage plugin **MUST** support pluggable key management via a `KeyProvider` abstraction. The default implementation stores tenant encryption keys in the same database as encrypted credentials. An alternative implementation **MUST** allow delegation to an external key management service (e.g., HashiCorp Vault, AWS KMS) for production environments where key–data separation is required. When the external `KeyProvider` is active, encryption keys **MUST** be stored separately from the database containing encrypted credentials, so that a single database compromise does not expose both ciphertext and decryption keys.
+
+**Rationale**: A pluggable `KeyProvider` enables operational flexibility — simple single-database deployments by default, with the option to enforce defense-in-depth key–data separation for environments with regulatory or enterprise security requirements.
+**Actors**: `cpt-cf-credstore-actor-backend`
+<!-- cpt-cf-id-content -->
+
+### 5.5 P2 — Planned
 
 #### OS Protected Storage Plugin
 
@@ -617,6 +632,7 @@ Secret values **MUST NOT** appear in logs, error messages, or debug output at an
 | OAuth/token provider | Shared component for Credstore REST authentication tokens | `p1` |
 | `tenant_resolver` | Provides tenant hierarchy information (used by Gateway module for hierarchical resolution walk-up) | `p1` |
 | `types_registry` | GTS-based plugin registration and discovery | `p1` |
+| External Key Service | External key management service (Vault, KMS) for tenant key storage when `ExternalKeyProvider` is active. Required for production deployments with key–data separation. | `p1` |
 
 ## 11. Assumptions
 
@@ -627,6 +643,7 @@ Secret values **MUST NOT** appear in logs, error messages, or debug output at an
 - Tenant hierarchy is managed externally and accessible via `tenant_resolver` (used by Gateway for hierarchical walk-up)
 - `sharing` field is stored in VendorA Credstore schema as metadata (used by Gateway for access control decisions)
 - One storage plugin is active per deployment
+- Tenant encryption keys are managed by a pluggable `KeyProvider` (Credentials Storage plugin); default is local database storage, with optional external key management service for key–data separation
 
 ## 12. Risks
 
@@ -636,6 +653,8 @@ Secret values **MUST NOT** appear in logs, error messages, or debug output at an
 | Secret values leaked through logs | Critical security incident | NFR enforcement, code review, log scrubbing |
 | Hierarchy walk-up performance at deep nesting | Increased latency for resolve operations | Gateway implements efficient walk-up with early termination; cache tenant hierarchy queries; monitor resolution depth |
 | ExternalID encoding collision | Wrong secret returned | Deterministic encoding with base64url; comprehensive test coverage |
+| External key service unavailability | All encrypt/decrypt operations blocked; credential reads and writes fail | High-availability key service deployment; readiness probe reflects KMS connectivity; key caching with short TTL for read-path resilience; circuit breaker for key service calls |
+| Keys co-located with encrypted data (DatabaseKeyProvider) | Single breach exposes both ciphertext and keys | Use `ExternalKeyProvider` in production; `DatabaseKeyProvider` restricted to development/test environments by deployment policy |
 
 ## 13. Open Questions
 
