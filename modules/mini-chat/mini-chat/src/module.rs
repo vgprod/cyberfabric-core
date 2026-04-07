@@ -155,6 +155,9 @@ impl Module for MiniChatModule {
         cfg.thumbnail
             .validate()
             .map_err(|e| anyhow::anyhow!("thumbnail config: {e}"))?;
+        cfg.rag
+            .validate()
+            .map_err(|e| anyhow::anyhow!("rag config: {e}"))?;
 
         let vendor = cfg.vendor.trim().to_owned();
         if vendor.is_empty() {
