@@ -169,7 +169,7 @@ Feature numbering reflects logical grouping, not implementation order. Recommend
   - [ ] `p1` - `cpt-cf-chat-engine-fr-stop-streaming`
   - [ ] `p1` - `cpt-cf-chat-engine-nfr-response-time`
   - [ ] `p1` - `cpt-cf-chat-engine-nfr-streaming`
-  - [ ] `p1` - `cpt-cf-chat-engine-nfr-backend-isolation`
+  - [x] `p1` - `cpt-cf-chat-engine-nfr-backend-isolation`
   - [ ] `p1` - `cpt-cf-chat-engine-nfr-file-size`
   - [x] `p1` - `cpt-cf-chat-engine-nfr-data-integrity`
 
@@ -485,7 +485,7 @@ Feature numbering reflects logical grouping, not implementation order. Recommend
 
 - **Design Constraints Covered**:
 
-  - [ ] `p1` - `cpt-cf-chat-engine-constraint-external-storage`
+  - [x] `p1` - `cpt-cf-chat-engine-constraint-external-storage`
 
 - **Domain Model Entities**:
   - ExportedSession
@@ -664,7 +664,7 @@ Feature numbering reflects logical grouping, not implementation order. Recommend
   - [ ] `p2` - `cpt-cf-chat-engine-fr-context-overflow`
   - [ ] `p2` - `cpt-cf-chat-engine-fr-conversation-memory`
   - [ ] `p1` - `cpt-cf-chat-engine-nfr-streaming`
-  - [ ] `p1` - `cpt-cf-chat-engine-nfr-backend-isolation`
+  - [x] `p1` - `cpt-cf-chat-engine-nfr-backend-isolation`
   - [ ] `p1` - `cpt-cf-chat-engine-nfr-availability`
 
 - **Design Principles Covered**:

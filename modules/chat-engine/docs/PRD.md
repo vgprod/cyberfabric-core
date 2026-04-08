@@ -221,7 +221,7 @@ The following are explicitly out of scope for Chat Engine:
 
 #### FR-001: Create Session
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-fr-create-session`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-fr-create-session`
 
 <!-- fdd-id-content -->
 The system **MUST** create a new session with a specified session type and client ID. The system binds each session to the requesting user (`user_id`) and tenant (`tenant_id`), both extracted from the JWT bearer token — they are never accepted from the request body. The system notifies the backend plugin of the new session and receives `enabled_capabilities` confirmed by the plugin for this session. The enabled capabilities determine which features are active (file attachments, session switching, summarization, etc.).
@@ -241,7 +241,7 @@ The system **MUST** forward user messages to backend plugin with full session co
 
 #### FR-003: Attach Files to Messages
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-fr-attach-files`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-fr-attach-files`
 
 <!-- fdd-id-content -->
 The system **MUST** support file attachments in messages. Clients reference previously uploaded files by stable identifiers and include them in message payloads. The system persists file references in message records and forwards them to backend plugins as part of message context. File handling is enabled only if session capabilities allow it.
@@ -288,7 +288,7 @@ The system **SHOULD** allow creating new messages from any point in conversation
 
 #### FR-007: Navigate Message Variants
 
-- [ ] `p2` - **ID**: `cpt-cf-chat-engine-fr-navigate-variants`
+- [x] `p2` - **ID**: `cpt-cf-chat-engine-fr-navigate-variants`
 
 <!-- fdd-id-content -->
 The system **SHOULD** allow navigation between message variants (siblings with same parent message). When retrieving messages, the system provides variant position information (e.g., "2 of 3") and allows clients to request specific variants.
@@ -365,7 +365,7 @@ The system **MAY** search across all sessions belonging to a client and return r
 
 #### FR-014: Session Lifecycle Management
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-fr-delete-session`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-fr-delete-session`
 
 <!-- fdd-id-content -->
 The system **MUST** support session lifecycle management with four states: active, archived, soft_deleted, and hard_deleted. Sessions transition through these states based on user actions or retention policies. Each lifecycle transition notifies backend plugins to enable synchronized resource management.
@@ -385,7 +385,7 @@ The system **MUST** support session lifecycle management with four states: activ
 
 #### FR-014a: Soft Delete Session (Recoverable)
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-fr-soft-delete-session`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-fr-soft-delete-session`
 
 <!-- fdd-id-content -->
 The system **MUST** support soft deletion as the default deletion mechanism. Soft-deleted sessions are hidden from normal queries but remain in the system and can be restored within a retention period. The system notifies backend plugins of soft deletion, allowing them to cleanup or suspend associated resources. Sessions automatically transition to permanent deletion after the retention period expires unless restored.
@@ -395,7 +395,7 @@ The system **MUST** support soft deletion as the default deletion mechanism. Sof
 
 #### FR-014b: Hard Delete Session (Permanent)
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-fr-hard-delete-session`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-fr-hard-delete-session`
 
 <!-- fdd-id-content -->
 The system **MUST** support permanent hard deletion that irreversibly removes sessions and all associated messages. Hard deletion is triggered explicitly by user request or automatically when soft-deleted sessions reach their retention period expiry. The system notifies backend plugins of permanent deletion, requiring them to cleanup all external resources (files, analytics, indices). This supports data minimization requirements (GDPR, CCPA).
@@ -405,7 +405,7 @@ The system **MUST** support permanent hard deletion that irreversibly removes se
 
 #### FR-014c: Restore Soft-Deleted Session
 
-- [ ] `p2` - **ID**: `cpt-cf-chat-engine-fr-restore-session`
+- [x] `p2` - **ID**: `cpt-cf-chat-engine-fr-restore-session`
 
 <!-- fdd-id-content -->
 The system **SHOULD** support restoring soft-deleted sessions back to active state. Restoration is only possible before the retention period expires. This enables recovery from accidental deletions. The system notifies backend plugins when sessions are restored, allowing them to reinstate any suspended resources. Hard-deleted sessions cannot be restored.
@@ -415,7 +415,7 @@ The system **SHOULD** support restoring soft-deleted sessions back to active sta
 
 #### FR-014d: Archive Inactive Sessions
 
-- [ ] `p3` - **ID**: `cpt-cf-chat-engine-fr-archive-session`
+- [x] `p3` - **ID**: `cpt-cf-chat-engine-fr-archive-session`
 
 <!-- fdd-id-content -->
 The system **MAY** support archiving inactive sessions to optimize database performance. Archived sessions remain accessible and queryable but may have reduced query performance. Archival can be triggered manually or automatically based on inactivity period. The system notifies backend plugins of lifecycle state changes. Archived sessions can transition back to active state when new activity occurs or be deleted.
@@ -485,7 +485,7 @@ The system **SHOULD** provide guidance and capabilities to support conversation 
 
 #### FR-017: Individual Message Deletion
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-fr-delete-message`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-fr-delete-message`
 
 <!-- fdd-id-content -->
 The system **MUST** support deletion of individual messages within a session. When a message is deleted, all associated reactions are cascade-deleted automatically to maintain referential integrity. The system validates ownership (authenticated user must own the message) before deletion and notifies the backend plugin of the deletion event.
@@ -512,7 +512,7 @@ The system **MUST** support deletion of individual messages within a session. Wh
 
 #### FR-018: Per-Message Feedback
 
-- [ ] `p2` - **ID**: `cpt-cf-chat-engine-fr-message-feedback`
+- [x] `p2` - **ID**: `cpt-cf-chat-engine-fr-message-feedback`
 
 <!-- fdd-id-content -->
 The system **SHOULD** support per-message feedback in the form of like/dislike reactions and optional text comments. Feedback enables quality monitoring, response quality evaluation, and user satisfaction tracking. Each message can have at most one reaction per user, with reaction changes (like → dislike) replacing the previous reaction. The system stores feedback metadata and optionally forwards it to backend plugins for analytics.
@@ -710,7 +710,7 @@ System must support at least 10,000 concurrent active sessions per instance. Mes
 
 #### NFR-004: Data Persistence
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-nfr-data-persistence`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-nfr-data-persistence`
 
 <!-- fdd-id-content -->
 All messages must be persisted to database before sending acknowledgment to client. Zero message loss is required during system failures, network interruptions, or backend failures. Database writes must use ACID transactions to ensure consistency.
@@ -734,7 +734,7 @@ System must authenticate all client requests using JWT bearer tokens. Each token
 
 #### NFR-007: Data Integrity
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-nfr-data-integrity`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-nfr-data-integrity`
 
 <!-- fdd-id-content -->
 Message tree structure must maintain referential integrity at all times. Orphaned messages (messages with non-existent parent) are not allowed. Parent-child relationships must be immutable once created. Database constraints must enforce tree structure integrity.
@@ -742,7 +742,7 @@ Message tree structure must maintain referential integrity at all times. Orphane
 
 #### NFR-008: Backend Isolation
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-nfr-backend-isolation`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-nfr-backend-isolation`
 
 <!-- fdd-id-content -->
 Webhook backend failures must not affect other sessions using different backends. Request timeout must be configurable per session type with a default of 30 seconds. Backend errors must be isolated and logged without cascading to other system components.

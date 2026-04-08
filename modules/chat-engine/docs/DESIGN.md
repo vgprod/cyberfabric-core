@@ -172,7 +172,7 @@ The system supports both **linear conversations** (traditional chat) and **non-l
 
 #### Principle: Immutable Message Tree
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-principle-immutable-tree`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-principle-immutable-tree`
 
 <!-- fdd-id-content -->
 **ADRs**: `cpt-cf-chat-engine-adr-message-tree-structure`
@@ -182,7 +182,7 @@ Once a message is created with a parent_message_id, that relationship is immutab
 
 #### Principle: Backend Plugin Authority
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-principle-backend-authority`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-principle-backend-authority`
 
 <!-- fdd-id-content -->
 **ADRs**: `cpt-cf-chat-engine-adr-capability-model`, `cpt-cf-chat-engine-adr-plugin-backend-integration`, `cpt-cf-chat-engine-adr-llm-gateway-plugin`
@@ -202,7 +202,7 @@ All plugin responses are streamed by default to minimize time-to-first-byte. Plu
 
 #### Principle: Zero Business Logic in Routing
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-principle-zero-business-logic`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-principle-zero-business-logic`
 
 <!-- fdd-id-content -->
 **ADRs**: `cpt-cf-chat-engine-adr-routing-layer`
@@ -216,7 +216,7 @@ When principles conflict, the following priority applies (highest first): (1) Im
 
 #### Constraint: External File Storage
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-constraint-external-storage`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-constraint-external-storage`
 
 <!-- fdd-id-content -->
 **ADRs**: `cpt-cf-chat-engine-adr-file-handling`
@@ -226,7 +226,7 @@ Chat Engine does not store file content. Clients must upload files to File Stora
 
 #### Constraint: Single Database Instance
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-constraint-single-database`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-constraint-single-database`
 
 <!-- fdd-id-content -->
 **ADRs**: `cpt-cf-chat-engine-adr-stateless-scaling`
@@ -305,19 +305,19 @@ All Chat Engine instances share a single database cluster. No local caching of s
 
 ##### Session
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-design-entity-session`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-design-entity-session`
 
 Session entity (session_id, client_id, user_id, tenant_id, session_type_id, enabled_capabilities, metadata, created_at, updated_at, share_token)
 
 ##### Message
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-design-entity-message`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-design-entity-message`
 
 Message entity (message_id, session_id, parent_message_id, role, content, file_ids, variant_index, is_active, is_complete, metadata, created_at)
 
 ##### SessionType
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-design-entity-session-type`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-design-entity-session-type`
 
 Binding of a plugin reference and session type identity (session_type_id, name, plugin_instance_id, available_capabilities, retention_policy). Plugin-specific configuration is stored separately in `PluginConfig` entity (see `cpt-cf-chat-engine-dbtable-plugin-configs`)
 
@@ -358,7 +358,7 @@ Abstract content type (type, ...). Subtypes:
 
 ##### MessageReaction
 
-- [ ] `p2` - **ID**: `cpt-cf-chat-engine-design-entity-message-reaction`
+- [x] `p2` - **ID**: `cpt-cf-chat-engine-design-entity-message-reaction`
 
 Reaction record (message_id, user_id, reaction_type, created_at, updated_at)
 - **ReactionType** - Enum: like, dislike, none
@@ -368,7 +368,7 @@ Reaction record (message_id, user_id, reaction_type, created_at, updated_at)
 
 ##### ShareToken
 
-- [ ] `p2` - **ID**: `cpt-cf-chat-engine-design-entity-share-token`
+- [x] `p2` - **ID**: `cpt-cf-chat-engine-design-entity-share-token`
 
 Cryptographic share token (share_token, session_id, created_at, expires_at)
 
@@ -534,7 +534,7 @@ Chat Engine is deployed as a unified monolithic service. All functionality is im
 
 #### Chat Engine Service
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-component-service`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-component-service`
 
 ##### Why this component exists
 
@@ -556,13 +556,13 @@ Content moderation, AI processing, and summarization logic belong to backend plu
 
 #### Session Management Module
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-component-session-management`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-component-session-management`
 
 Session lifecycle operations: create, delete, retrieve, type switching, share token generation. Invokes backend plugin with `on_session_created` trait method.
 
 #### Message Processing Module
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-component-message-processing`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-component-message-processing`
 
 Message tree management: creation, persistence, parent validation, variant_index assignment, tree constraints. **ADRs**: `cpt-cf-chat-engine-adr-message-tree-structure`, `cpt-cf-chat-engine-adr-message-variants`, `cpt-cf-chat-engine-adr-message-recreation`.
 
@@ -580,7 +580,7 @@ HTTP chunked streaming: plugin-to-client pipe, backpressure control, connection 
 
 #### Conversation Export Module
 
-- [ ] `p3` - **ID**: `cpt-cf-chat-engine-component-conversation-export`
+- [x] `p3` - **ID**: `cpt-cf-chat-engine-component-conversation-export`
 
 Message tree traversal, format rendering (JSON/Markdown/TXT), file storage upload. Supports active path and full tree export.
 
@@ -592,7 +592,7 @@ Full-text search across messages: session-scoped and cross-session search, ranki
 
 #### Message Reactions Module
 
-- [ ] `p2` - **ID**: `cpt-cf-chat-engine-component-message-reactions`
+- [x] `p2` - **ID**: `cpt-cf-chat-engine-component-message-reactions`
 
 Per-user per-message reactions with UPSERT semantics. Fire-and-forget plugin notification. Cascade delete on message removal. **ADRs**: `cpt-cf-chat-engine-adr-message-reactions`.
 
@@ -1055,7 +1055,7 @@ sequenceDiagram
 
 #### S14: Add Message Reaction (HTTP)
 
-- [ ] `p2` - **ID**: `cpt-cf-chat-engine-seq-add-reaction`
+- [x] `p2` - **ID**: `cpt-cf-chat-engine-seq-add-reaction`
 **Use Case**: `cpt-cf-chat-engine-fr-message-feedback`
 **Actors**: `cpt-cf-chat-engine-actor-client`, `cpt-cf-chat-engine-actor-backend-plugin`
 
@@ -1092,7 +1092,7 @@ sequenceDiagram
 
 #### S15: Remove Message with Reactions (Cascade Delete)
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-seq-delete-message-cascade`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-seq-delete-message-cascade`
 **Use Case**: Message deletion with reaction cleanup
 **Actors**: `cpt-cf-chat-engine-actor-client`
 
@@ -1122,7 +1122,7 @@ sequenceDiagram
 
 #### Table: sessions
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-dbtable-sessions`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-dbtable-sessions`
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -1140,7 +1140,7 @@ sequenceDiagram
 
 #### Table: messages
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-dbtable-messages`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-dbtable-messages`
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -1162,7 +1162,7 @@ sequenceDiagram
 
 #### Table: message_reactions
 
-- [ ] `p2` - **ID**: `cpt-cf-chat-engine-dbtable-reactions`
+- [x] `p2` - **ID**: `cpt-cf-chat-engine-dbtable-reactions`
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -1176,7 +1176,7 @@ sequenceDiagram
 
 #### Table: session_types
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-dbtable-session-types`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-dbtable-session-types`
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -1188,7 +1188,7 @@ sequenceDiagram
 
 ##### plugin_configs
 
-- [ ] `p1` - **ID**: `cpt-cf-chat-engine-dbtable-plugin-configs`
+- [x] `p1` - **ID**: `cpt-cf-chat-engine-dbtable-plugin-configs`
 
 | Column | Type | Description |
 |--------|------|-------------|

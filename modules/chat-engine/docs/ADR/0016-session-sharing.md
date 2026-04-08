@@ -13,7 +13,7 @@
   - [Consequences](#consequences)
   - [Confirmation](#confirmation)
 - [Pros and Cons of the Options](#pros-and-cons-of-the-options)
-  - [Option 1: Cryptographic share token with separate table](#option-1-cryptographic-share-token-with-separate-table)
+  - [Option 1: Cryptographic share token as column on sessions table](#option-1-cryptographic-share-token-as-column-on-sessions-table)
   - [Option 2: Signed session_id JWT](#option-2-signed-session_id-jwt)
   - [Option 3: Publicly readable sessions](#option-3-publicly-readable-sessions)
 - [Related Design Elements](#related-design-elements)
