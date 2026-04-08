@@ -1849,7 +1849,7 @@ async fn proxy_websocket_idle_timeout_closes_connection() {
     use tokio::io::AsyncWriteExt;
 
     let h = AppHarness::builder()
-        .with_websocket_idle_timeout(std::time::Duration::from_millis(200))
+        .with_websocket_idle_timeout(std::time::Duration::from_secs(1))
         .build()
         .await;
     setup_ws_upstream(&h, "ws-idle-timeout").await;
@@ -1864,8 +1864,8 @@ async fn proxy_websocket_idle_timeout_closes_connection() {
     let (opcode, _) = read_ws_frame(&mut stream).await.expect("echo frame");
     assert_eq!(opcode, 0x1, "expected text frame opcode");
 
-    // Wait longer than the idle timeout (200ms).
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    // Wait longer than the idle timeout (1s).
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // Expect EOF or close frame indicating gateway closed the connection.
     if let Some((op, _)) = read_ws_frame(&mut stream).await {
@@ -3961,6 +3961,12 @@ async fn ws_readiness_probe(stream: &mut tokio::net::TcpStream) {
             Some((0xA, data)) if data == probe => return,
             Some((0xA, _)) => continue, // stale or unrelated Pong
             Some((0x9, _)) => continue, // Ping from upstream
+            Some((0x8, close_payload)) => panic!(
+                "readiness probe failed: expected Pong with payload {:?}, \
+                 but server sent Close frame with payload {close_payload:?} — \
+                 idle timeout may be too short for CI/coverage builds",
+                std::str::from_utf8(probe).unwrap(),
+            ),
             other => panic!(
                 "readiness probe failed: expected Pong with payload {:?}, got {other:?}",
                 std::str::from_utf8(probe).unwrap(),
@@ -4077,7 +4083,7 @@ async fn proxy_websocket_close_frame_propagated() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn proxy_websocket_idle_timeout_sends_1001() {
     let h = AppHarness::builder()
-        .with_websocket_idle_timeout(std::time::Duration::from_millis(200))
+        .with_websocket_idle_timeout(std::time::Duration::from_secs(1))
         .build()
         .await;
     setup_ws_upstream(&h, "ws-idle-1001").await;
@@ -4095,7 +4101,7 @@ async fn proxy_websocket_idle_timeout_sends_1001() {
     assert_eq!(echo.0, 0x1);
 
     // Wait for idle timeout to fire.
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // Should receive Close 1001.
     let frame = read_ws_frame(&mut stream).await;
