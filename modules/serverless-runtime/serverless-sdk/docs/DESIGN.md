@@ -101,7 +101,7 @@ without requiring callers to annotate anything.
 | `cpt-cf-serverless-sdk-core-fr-compensation-input` | `CompensationInput` struct in `workflow.rs`, `#[non_exhaustive]` |
 | `cpt-cf-serverless-sdk-core-fr-context` | `Context` struct in `context.rs` with 9 fields from `InvocationRecord` |
 | `cpt-cf-serverless-sdk-core-fr-deadline-helpers` | `is_deadline_exceeded()` and `remaining_time()` on `Context` |
-| `cpt-cf-serverless-sdk-core-fr-environment-trait` | Sync `Environment` trait in `environment.rs` |
+| `cpt-cf-serverless-sdk-core-fr-environment-trait` | Sync `Environment` trait with `CredStoreEnvironment` impl in `environment.rs` |
 | `cpt-cf-serverless-sdk-core-fr-error-model` | `#[non_exhaustive]` `ServerlessSdkError` with `thiserror` in `error.rs` |
 | `cpt-cf-serverless-sdk-core-fr-trace-module` | `trace.rs` with `call_instrumented` and `compensate_instrumented` |
 | `cpt-cf-serverless-sdk-core-fr-no-consumer-tracing` | `tracing` calls contained entirely within `trace.rs` |
@@ -120,10 +120,11 @@ without requiring callers to annotate anything.
 
 | Decision | Summary |
 |----------|---------|
-| `async-trait` over RPITIT | Use `async-trait` for `FunctionHandler` and `WorkflowHandler` until RPITIT with `Send` bound is fully stable |
-| Synchronous `Environment` | Adapter pre-fetches config/secrets before invocation; no async resolution inside handlers |
+| `async-trait` over native `async fn` in traits | Rust supports `async fn` in trait definitions natively (RPITIT — Return Position `impl Trait` In Traits), but the returned future does not carry a `Send` bound by default. Multi-threaded async runtimes require `Send` futures. The `async-trait` crate adds the `Send` bound automatically via `Pin<Box<dyn Future + Send>>`. Use `async-trait` until native `async fn` in traits supports `Send`-bounded futures ergonomically on stable Rust. |
+| Synchronous `Environment` | Pre-fetch config/secrets from the platform credstore before invocation; handlers access them synchronously via the `Environment` trait |
+| Dispatch module | Invocation plumbing (`Context` construction, `Environment` population, `params → I` deserialisation) is centralised in a `dispatch` module within this crate. Adapters call a single dispatch entry point. |
 | Structured `CompensationInput` | Dedicated struct with named fields, not a generic handler input parameter |
-| Concrete `Context` struct | Not a trait or generic parameter — keeps construction simple and adapter-side mapping explicit |
+| Concrete `Context` struct | Not a trait or generic parameter — keeps construction simple and mapping explicit |
 | `#[non_exhaustive]` error enum | `ServerlessSdkError` is an enum (not a trait object) for exhaustive `RuntimeErrorCategory` mapping |
 | `WorkflowHandler` supertrait | `WorkflowHandler<I,O>: FunctionHandler<I,O>` — every workflow is a function |
 
@@ -133,25 +134,36 @@ without requiring callers to annotate anything.
 ╔══════════════════════════════════════════════════════╗
 ║  Adapter crate (cf-serverless-sdk-adapter-*)         ║
 ║  implements FunctionHandler<I, O> / WorkflowHandler  ║
-║  populates Context, Environment; wires trace module  ║
+║  bridges engine-specific execution model             ║
+║  applies RetryPolicy using engine-native mechanisms  ║
 ║  (Temporal, Starlark, cloud FaaS — out of scope)      ║
 ╚═══════════════════════╤══════════════════════════════╝
                         │ depends on
 ╔═══════════════════════▼══════════════════════════════╗
 ║  cf-serverless-sdk-core  (this crate)                ║
+║                                                      ║
+║  Traits & Types                                      ║
 ║  ┌──────────┐ ┌───────────┐ ┌───────┐ ┌──────────┐  ║
 ║  │ handler  │ │ workflow  │ │ error │ │ context  │  ║
 ║  └──────────┘ └───────────┘ └───────┘ └──────────┘  ║
 ║  ┌─────────────────┐ ┌───────────────────────────┐   ║
 ║  │  environment    │ │  trace  (adapter-only)     │   ║
 ║  └─────────────────┘ └───────────────────────────┘   ║
+║                                                      ║
+║  Dispatch (invocation plumbing)                      ║
+║  ┌──────────────────────────────────────────────┐    ║
+║  │  dispatch_invocation / dispatch_compensation  │    ║
+║  │  Context from InvocationRecord               │    ║
+║  │  CredStoreEnvironment from CredStoreClientV1 │    ║
+║  │  params → I deserialisation                  │    ║
+║  └──────────────────────────────────────────────┘    ║
 ╚══════════════════════════════════════════════════════╝
 ```
 
 | Layer | Responsibility | Technology |
 |-------|---------------|------------|
-| Adapter Developer | Implements `FunctionHandler<I, O>` / `WorkflowHandler<I, O>`; populates `Context` and `Environment`; wires `trace` | Rust + `async-trait` |
-| SDK Core (this crate) | Defines traits, types, error model, instrumentation | Rust stable, `serde`, `tracing` |
+| Adapter Developer | Implements `FunctionHandler<I, O>` / `WorkflowHandler<I, O>`; bridges engine-specific execution; applies `RetryPolicy` using engine-native or custom retry mechanism | Rust + `async-trait` |
+| SDK (this crate) | Traits, types, error model, instrumentation, and dispatch module (invocation plumbing: `Context` construction, `Environment` population from credstore, `params → I` deserialisation) | Rust stable, `serde`, `tracing`, `cf-credstore-sdk` |
 
 ---
 
@@ -169,8 +181,9 @@ platform concepts (GTS IDs as `String`, `serde_json::Value` for opaque payloads)
 depending on any adapter. This directly enforces
 `cpt-cf-serverless-runtime-principle-impl-agnostic` at the SDK layer.
 
-`Environment` is synchronous precisely because an async interface would require the trait
-to hold a live credstore client, violating this principle.
+`Environment` is synchronous because handlers should not perform async I/O for config/secret
+resolution. The SDK pre-fetches values from the platform credstore (`CredStoreClientV1`)
+before invocation and exposes them through the synchronous `Environment` trait.
 
 #### GTS Identity by Reference
 
@@ -238,7 +251,8 @@ with `Send` bounds before stabilisation) must be replaced with stable alternativ
 #### InvocationRecord → Context Field Mapping
 
 `Context` is the SDK's read-only projection of the runtime's `InvocationRecord`.
-The adapter populates `Context` fields from the record before calling the handler.
+The SDK constructs `Context` from the record before calling the handler via
+`Context::from_invocation_record()` — a deterministic mapping.
 
 | `Context` field | Source in Runtime | Type |
 |-----------------|-------------------|------|
@@ -319,26 +333,27 @@ for which types carry this attribute and what it means for each consumer role.
 | `CompensationInput` | Yes (struct) | Field access by name is stable; struct literal construction outside the crate is forbidden | Adapter constructs `CompensationInput` via `CompensationInput::new(trigger, original_workflow_invocation_id, failed_step_id, failed_step_error, workflow_state_snapshot, timestamp, function_id, original_input, tenant_id, correlation_id, started_at)` — a `pub fn new(...)` constructor defined in the crate |
 | `FailedStepError` | Yes (struct) | Field access by name is stable; struct literal construction outside the crate is forbidden | Constructed via `FailedStepError::new(error_type, message, error_metadata)` |
 | `CompensationTrigger` | Yes (enum) | `match` must include a `_` catch-all arm | `match` must include a `_` catch-all arm |
-| `Context` | No | All 9 fields are stable; struct literal construction is used in tests | Adapter constructs `Context` via struct literal syntax; any field addition is a compile break at every adapter construction site — intentional, to force `InvocationRecord → Context` mapping updates |
+| `Context` | No | All 9 fields are stable; struct literal construction is used in tests | Constructed via `Context::from_invocation_record()`; test code uses struct literal syntax. Any field addition is a compile break at the mapping site — intentional, to force the `InvocationRecord → Context` mapping to stay in sync. |
 
-**Note on `Context`**: `Context` is not `#[non_exhaustive]` because adapters must
-construct it in struct literal form before calling handlers. Adding or removing a field
-on `Context` is a compile-breaking change: every adapter site that constructs a `Context`
-struct literal must be updated to supply the new field (or remove the old one). This is
-intentional — it forces adapter-side `InvocationRecord → Context` mappings to stay in sync
-with the SDK at compile time.
+**Note on `Context`**: `Context` is not `#[non_exhaustive]` because
+`Context::from_invocation_record()` and test code use struct literal form.
+Adding or removing a field is a compile-breaking change at the mapping site,
+ensuring it stays in sync with `InvocationRecord`.
 
 ### 3.2 Component Model
 
 ```mermaid
 graph TD
-    lib["lib.rs (re-exports)"]
-    ctx["context.rs\nContext"]
-    env["environment.rs\nEnvironment trait"]
-    err["error.rs\nServerlessSdkError"]
-    hdl["handler.rs\nHandler<I,O>"]
-    wfl["workflow.rs\nWorkflowHandler<I,O>\nCompensationInput\nCompensationTrigger"]
-    trc["trace.rs\ncall_instrumented\ncompensate_instrumented"]
+    subgraph sdk["cf-serverless-sdk-core (this crate)"]
+        lib["lib.rs (re-exports)"]
+        ctx["context.rs\nContext"]
+        env["environment.rs\nEnvironment trait\nCredStoreEnvironment"]
+        err["error.rs\nServerlessSdkError"]
+        hdl["handler.rs\nHandler<I,O>"]
+        wfl["workflow.rs\nWorkflowHandler<I,O>\nCompensationInput\nCompensationTrigger"]
+        trc["trace.rs\ncall_instrumented\ncompensate_instrumented"]
+        dsp["dispatch.rs\ndispatch_invocation\ndispatch_compensation"]
+    end
 
     lib --> ctx
     lib --> env
@@ -346,6 +361,7 @@ graph TD
     lib --> hdl
     lib --> wfl
     lib --> trc
+    lib --> dsp
 
     hdl --> ctx
     hdl --> env
@@ -359,6 +375,11 @@ graph TD
     trc --> err
     trc --> hdl
     trc --> wfl
+    dsp --> ctx
+    dsp --> env
+    dsp --> trc
+    dsp --> hdl
+    dsp --> wfl
 ```
 
 #### context.rs — Context
@@ -391,20 +412,24 @@ Does not own: any mutable invocation state, status transitions, retry tracking, 
 
 ##### Why this component exists
 
-Handlers need access to deployment configuration and secrets without coupling to the
-credstore SDK, async resolution, or any platform infrastructure. `Environment` is the
-minimal abstraction that satisfies this need synchronously.
+Handlers need access to deployment configuration and secrets without coupling to
+async resolution inside handler logic. `Environment` is the minimal abstraction
+that satisfies this need synchronously.
 
 ##### Responsibility scope
 
-Owns: `Environment` trait with `get_config` and `get_secret`.
+Owns: `Environment` trait with `get_config` and `get_secret`. The core crate defines
+the trait only. `CredStoreEnvironment` (the standard implementation backed by
+`CredStoreClientV1`) lives in the `dispatch` module of this crate.
+Custom implementations remain possible for testing or non-standard secret sources.
 
 ##### Responsibility boundaries
 
-Does not own: secret resolution, credstore client, async fetching logic, secret caching.
-Those are adapter concerns. `Environment` is a read-only snapshot, not a live proxy.
+Does not own: credstore plugin discovery or credential management (platform concern),
+secret caching beyond the per-invocation snapshot. `Environment` is a read-only
+snapshot, not a live proxy.
 
-**Design decision**: synchronous interface (adapter pre-fetch model).
+**Design decision**: synchronous interface; SDK pre-fetches from credstore before invocation.
 
 ---
 
@@ -453,8 +478,8 @@ is valid for single-owner dispatch but insufficient for shared registry storage.
 
 ##### Responsibility boundaries
 
-Does not own: input deserialisation from raw JSON (adapter concern), output serialisation
-to `InvocationRecord.result` (adapter concern), span emission (trace module concern).
+Does not own: span emission (trace module concern). Input deserialisation from raw JSON
+and output serialisation are owned by the dispatch module.
 
 **Design decision**: `async-trait` for stable `Send`-bound futures.
 
@@ -480,9 +505,12 @@ enum (`Failure`, `Cancellation`, `#[non_exhaustive]`).
 
 ##### Responsibility boundaries
 
-Does not own: step-level compensation (executor concern), state machine transitions
-(`compensating` → `compensated` / `dead_lettered` — runtime concern), serialisation
-of `CompensationInput` from the runtime's `CompensationContext` JSON (adapter concern).
+Does not own: step-level compensation (executor concern), checkpoint creation (executor
+concern — executors write checkpoints; the SDK only reads checkpoint state during
+compensation via `CompensationInput.workflow_state_snapshot`), state machine transitions
+(`compensating` → `compensated` / `dead_lettered` — platform layer concern). Deserialisation
+of `CompensationInput` from the runtime's `CompensationContext` JSON is owned by the
+dispatch module.
 
 **Related**: `cpt-cf-serverless-sdk-core-component-handler`
 
@@ -628,21 +656,26 @@ All external integration happens through adapter crates that depend on this crat
 sequenceDiagram
     participant R as Serverless Runtime
     participant A as Adapter
+    participant D as dispatch::dispatch_invocation
     participant T as trace::call_instrumented
     participant H as FunctionHandler<I,O> impl
 
     R->>A: start_invocation(InvocationRecord)
-    A->>A: populate Context from InvocationRecord
-    A->>A: populate Environment (pre-fetch config + secrets)
-    A->>A: deserialise params JSON → I
-    A->>T: call_instrumented(handler, ctx, env, input)
+    A->>A: resolve handler instance
+    A->>D: dispatch_invocation(handler, record, env_provider)
+    D->>D: deserialise params JSON → I
+    D->>D: construct Context from InvocationRecord
+    D->>D: populate Environment from credstore
+    D->>T: call_instrumented(handler, ctx, env, input)
     T->>T: create span "serverless.handler.call"
     T->>T: emit event "started"
     T->>H: call(ctx, env, input)
     H-->>T: Result<O, ServerlessSdkError>
     T->>T: emit event "succeeded" | "failed"
-    T-->>A: Result<O, ServerlessSdkError>
-    A->>A: serialise O → JSON or map Err → RuntimeErrorPayload
+    T-->>D: Result<O, ServerlessSdkError>
+    D->>D: serialise O → JSON or map Err
+    D-->>A: Result<Value, InvocationError>
+    A->>A: map result → RuntimeErrorPayload if needed
     A-->>R: InvocationResult
 ```
 
@@ -656,14 +689,17 @@ sequenceDiagram
 sequenceDiagram
     participant R as Serverless Runtime
     participant A as Adapter
+    participant D as dispatch::dispatch_compensation
     participant T as trace::compensate_instrumented
     participant W as WorkflowHandler<I,O> impl
 
     R->>A: start_invocation(compensation InvocationRecord)
     note over A: trigger="failure"|"cancellation"
-    A->>A: deserialise params JSON → CompensationInput
-    A->>A: populate Context, Environment
-    A->>T: compensate_instrumented(handler, ctx, env, input)
+    A->>A: resolve handler instance
+    A->>D: dispatch_compensation(handler, record, env_provider)
+    D->>D: deserialise params JSON → CompensationInput
+    D->>D: construct Context, populate Environment
+    D->>T: compensate_instrumented(handler, ctx, env, input)
     T->>T: create span "serverless.handler.compensate"
     T->>T: emit event "compensation_started"
     T->>W: compensate(ctx, env, input)
@@ -671,7 +707,8 @@ sequenceDiagram
     W->>W: perform rollback using workflow_state_snapshot
     W-->>T: Result<(), ServerlessSdkError>
     T->>T: emit "compensation_completed" | "compensation_failed"
-    T-->>A: Result<(), ServerlessSdkError>
+    T-->>D: Result<(), ServerlessSdkError>
+    D-->>A: Result<(), InvocationError>
     A-->>R: Ok → transition to compensated
     note over R: Err → transition to dead_lettered
 ```
@@ -685,7 +722,7 @@ infrastructure.
 
 | Boundary | Test Double | Notes |
 |----------|-------------|-------|
-| `Environment` trait | Any `HashMap<String, String>`-backed impl | No credstore SDK, no async setup |
+| `Environment` trait | Any `HashMap<String, String>`-backed impl for unit tests; `CredStoreEnvironment` for integration tests | Unit tests need no credstore; integration tests use the standard impl |
 | `FunctionHandler<I, O>` | Direct invocation: `handler.call(&ctx, &env, input).await` | No adapter, no spawned tasks |
 | `WorkflowHandler<I, O>` | Direct invocation: `handler.compensate(&ctx, &env, input).await` | Test idempotency with identical `original_workflow_invocation_id` |
 | `Context` | Fully constructible in tests; set `deadline` to a past `Instant` to test expired-deadline paths | No runtime infrastructure |
@@ -736,8 +773,9 @@ This crate is a downstream consumer of the Serverless Runtime's domain model
 - `ServerlessSdkError` variants map to `RuntimeErrorCategory` values (§3.1 Runtime Errors).
 - `trace.rs` timeline events correspond to `TimelineEventType` values (§3.1 Additional Types).
 
-This crate does **not** depend on the `serverless-runtime` module at the Cargo level.
-The mapping is documented in this design and enforced by adapters at runtime.
+This crate is part of the `serverless-runtime` module and depends on its shared domain
+types (`InvocationRecord`, `CompensationContext`, `RuntimeErrorCategory`). The `dispatch`
+module owns the deterministic field mappings between runtime types and SDK types.
 
 ### Comparison with Similar Solutions
 
@@ -769,7 +807,7 @@ The mapping is documented in this design and enforced by adapters at runtime.
 
 | Item | Nature | Migration Path |
 |------|--------|----------------|
-| `async-trait` dependency | One heap allocation (`Box<dyn Future>`) per `call`/`compensate` invocation; extra `#[async_trait]` annotation required on every `impl` block | Remove when RPITIT with `Send` bound is fully ergonomic on stable Rust. Migration is backward-compatible at the trait level. |
+| `async-trait` dependency | One heap allocation (`Box<dyn Future>`) per `call`/`compensate` invocation; extra `#[async_trait]` annotation required on every `impl` block | Remove when native `async fn` in traits (RPITIT — Return Position `impl Trait` In Traits) supports `Send`-bounded futures ergonomically on stable Rust. Migration is backward-compatible at the trait level. |
 
 ### Crate Naming Convention
 

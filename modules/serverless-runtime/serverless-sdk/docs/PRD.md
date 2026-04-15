@@ -77,10 +77,18 @@ developers implement to integrate execution engines (Temporal, Starlark, cloud F
 or any future engine) with the Serverless Runtime.
 
 The crate defines a minimal, opinionated set of traits and types that covers the
-complete adapter authoring contract: receiving invocation context, accessing
+complete handler authoring contract: receiving invocation context, accessing
 configuration and secrets, returning typed outputs, implementing durable workflow
-compensation, and emitting structured observability events. Adapter crates build
-on this foundation without ever modifying it.
+compensation, and emitting structured observability events. The SDK also provides
+a dispatch module that handles invocation plumbing — constructing `Context` from
+`InvocationRecord`, populating `Environment` from the platform credstore, and
+deserialising typed handler input from raw JSON.
+
+Workflow checkpointing, suspend/resume, and step-level compensation are
+executor-specific concerns (e.g., Temporal's native checkpointing differs
+fundamentally from a Starlark-based approach) and are out of scope for this crate.
+Executors write checkpoints; the SDK only reads checkpoint state during compensation
+via `CompensationInput.workflow_state_snapshot`.
 
 ### 1.2 Background / Problem Statement
 
@@ -170,10 +178,11 @@ _Baseline: module is new (no prior implementation). All targets apply at first s
 - It must contain **no unsafe code** (enforced by workspace `unsafe_code = "forbid"`).
 - It must have **no engine-specific dependencies** (no `temporal-sdk`, `starlark`,
   or similar crates) — ever.
-- **Developer experience target** (UX-PRD-001): The primary target users are
-  Adapter Developers — platform developers with intermediate async experience. An
-  Adapter Developer MUST be able to implement a conformant `FunctionHandler`
-  using only the SDK documentation and this PRD, without consulting engine documentation.
+- **Developer experience target** (UX-PRD-001): The SDK MUST be designed so that
+  an Adapter Developer — a platform developer with intermediate async Rust experience —
+  can implement a conformant `FunctionHandler` using only the SDK documentation and
+  this PRD, without consulting engine documentation. This is a design quality objective
+  for the SDK, not a prerequisite on the developer.
 - **Compatibility policy**: The crate follows Rust semver conventions. At 0.x all
   public interfaces are considered unstable and may change between minor releases.
   The stability target is 1.0, gated on successful validation by at least one
@@ -188,18 +197,24 @@ _Baseline: module is new (no prior implementation). All targets apply at first s
 - `FunctionHandler<I, O>` trait for stateless function invocations.
 - `WorkflowHandler<I, O>` trait extending `FunctionHandler` with compensation.
 - `Context` type populated from `InvocationRecord` metadata.
-- `Environment` trait for synchronous config and secret access.
+- `Environment` trait for synchronous config and secret access, with a standard
+  `CredStoreEnvironment` implementation backed by the platform credstore.
 - `ServerlessSdkError` typed error enum with `RuntimeErrorCategory` mapping.
 - `CompensationInput` and `CompensationTrigger` types for saga compensation.
 - `trace` module with adapter-facing instrumentation utilities that emit
   `tracing` spans and timeline events.
+- `dispatch` module for invocation plumbing: `Context` construction from
+  `InvocationRecord`, `Environment` population from credstore, and
+  `params → I` deserialisation.
 
 ### 4.2 Out of Scope
 
 - GTS schema validation or GTS chain parsing — schema ownership belongs to the GTS layer.
 - `InvocationStatus` state machine — owned by the runtime.
 - `TenantRuntimePolicy`, `Schedule`, `Trigger`, `Webhook` — owned by the runtime.
-- Retry policy logic — runtime concern; SDK only exposes `attempt_number` to handlers.
+- Retry policy logic — `RetryPolicy` (max attempts, backoff, non-retryable errors) is
+  defined by the platform; adapters apply it using engine-native retry mechanisms where
+  available. The SDK exposes `attempt_number` in `Context` so handlers can be retry-aware.
 
 
 ---
@@ -306,12 +321,15 @@ and query the remaining time before forced termination.
 
 - [ ] `p1` - **ID**: `cpt-cf-serverless-sdk-core-fr-environment-trait`
 
-The crate MUST provide an `Environment` contract for synchronous key-based access to
-configuration values and secrets. Adapters supply the implementation, populated before
-each invocation.
+The SDK MUST provide an `Environment` trait for synchronous key-based access to
+configuration values and secrets, populated before each invocation. The SDK MUST
+provide a standard `Environment` implementation backed by the platform credstore
+(`CredStoreClientV1`). Custom `Environment` implementations remain possible for
+testing or non-standard secret sources.
 
 - **Rationale**: Provides engine-agnostic access to function configuration and credentials
-  without coupling to credstore APIs or async resolution inside handler logic.
+  without coupling handler logic to async resolution. The credstore is the platform-standard
+  secret source; centralising the integration in the SDK prevents duplicate boilerplate.
 - **Actors**: `cpt-cf-serverless-sdk-core-actor-adapter-dev`
 
 ### 5.5 Error Model
@@ -492,8 +510,9 @@ surface, stability classifications, and breaking change policies, see [DESIGN.md
 
 ### 7.2 External Integration Contracts
 
-- Invocation record → context mapping (adapter populates from runtime)
-- Compensation context → compensation input mapping (adapter populates from runtime)
+- Invocation record → context mapping (deterministic field mapping)
+- Compensation context → compensation input mapping (deterministic field mapping)
+- Credstore → environment population (standard `CredStoreClientV1`-backed implementation)
 
 ---
 
