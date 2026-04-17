@@ -21,16 +21,15 @@ from .utils import toml_utils
 logger = logging.getLogger(__name__)
 
 _VERSION_RES = (
-    re.compile(r"^v?\d+\.\d+$"),
-    re.compile(r"^v?\d+\.\d+\.\d+$"),
+    re.compile(r"^v?\d+\.\d+(?:\.\d+)?(?:-[0-9a-zA-Z._-]+)?$"),
 )
 
 # @cpt-begin:cpt-cypilot-algo-ralphex-delegation-validate:p1:inst-if-none
 INSTALL_GUIDANCE = (
     "ralphex is not installed. Install via one of:\n"
-    "  - Homebrew (macOS): brew install cyberfabric/tap/ralphex\n"
-    "  - Go: go install github.com/cyberfabric/ralphex@latest\n"
-    "  - Binary releases: https://github.com/cyberfabric/ralphex/releases"
+    "  - Homebrew (macOS): brew install umputun/apps/ralphex\n"
+    "  - Go: go install github.com/umputun/ralphex/cmd/ralphex@latest\n"
+    "  - Binary releases: https://github.com/umputun/ralphex/releases"
 )
 # @cpt-end:cpt-cypilot-algo-ralphex-delegation-validate:p1:inst-if-none
 
@@ -156,9 +155,9 @@ def validate(ralphex_path: Optional[str]) -> Dict[str, object]:
         "message": (
             f"ralphex at {ralphex_path} returned unexpected output.\n"
             "Please update to a compatible version:\n"
-            "  - Homebrew: brew upgrade cyberfabric/tap/ralphex\n"
-            "  - Go: go install github.com/cyberfabric/ralphex@latest\n"
-            "  - Binary releases: https://github.com/cyberfabric/ralphex/releases"
+            "  - Homebrew: brew upgrade umputun/apps/ralphex\n"
+            "  - Go: go install github.com/umputun/ralphex/cmd/ralphex@latest\n"
+            "  - Binary releases: https://github.com/umputun/ralphex/releases"
         ),
     }
     # @cpt-end:cpt-cypilot-algo-ralphex-delegation-validate:p1:inst-return-incompatible
