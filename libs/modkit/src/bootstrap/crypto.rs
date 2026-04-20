@@ -1,29 +1,54 @@
 use std::sync::Once;
 
+/// Error returned when the crypto provider cannot be installed.
+#[derive(Debug, thiserror::Error)]
+pub enum CryptoProviderError {
+    /// Another crypto provider was already installed (FIPS mode).
+    #[error("failed to install FIPS crypto provider - another provider is already installed")]
+    FipsProviderConflict,
+}
+
 static INSTALLED: Once = Once::new();
 
-/// Install the FIPS-validated AWS-LC crypto provider as the process-wide default.
+/// Install the process-wide default rustls [`CryptoProvider`](rustls::crypto::CryptoProvider).
+///
+/// - **FIPS mode** (`fips` feature): installs the FIPS-validated AWS-LC provider
+///   (`aws-lc-fips-sys`, NIST Certificate #4816).
+/// - **Standard mode**: installs the `aws-lc-rs` provider explicitly. This is
+///   required because both `ring` and `aws-lc-rs` are compiled into the binary
+///   (ring via `aliri`/`pingora-rustls`), and rustls 0.23 panics when it cannot
+///   auto-detect a single provider.
 ///
 /// This **must** be called before any TLS configuration, HTTP client, database
-/// connection, or JWT operation is created. It sets the global [`rustls::crypto::CryptoProvider`]
-/// that all downstream consumers (rustls, sqlx, jsonwebtoken, pingora, etc.) will use.
+/// connection, or JWT operation is created.
 ///
-/// Outputs to stderr (always visible, even before tracing is initialized) and
-/// to `tracing::info!` (visible in structured logs if a subscriber is active).
+/// Safe to call multiple times — only the first invocation has an effect.
 ///
-/// # Process exit
+/// # Errors
 ///
-/// Exits with code 1 if another crypto provider has already been installed.
-pub fn init_fips_crypto_provider() {
+/// Returns [`CryptoProviderError::FipsProviderConflict`] if the `fips` feature is
+/// enabled and another crypto provider has already been installed.
+pub fn init_crypto_provider() -> Result<(), CryptoProviderError> {
+    let mut result = Ok(());
+
     INSTALLED.call_once(|| {
-        if let Err(_existing) = rustls::crypto::default_fips_provider().install_default() {
-            eprintln!(
-                "[FIPS] FATAL: failed to install FIPS crypto provider - another provider is already installed"
-            );
-            std::process::exit(1);
+        #[cfg(feature = "fips")]
+        {
+            if rustls::crypto::default_fips_provider()
+                .install_default()
+                .is_err()
+            {
+                result = Err(CryptoProviderError::FipsProviderConflict);
+                return;
+            }
+            tracing::info!("FIPS-140-3 crypto provider installed (AWS-LC FIPS module)");
         }
 
-        eprintln!("[FIPS] FIPS-140-3 crypto provider installed (AWS-LC FIPS module)");
-        tracing::info!("FIPS-140-3 crypto provider installed (AWS-LC FIPS module)");
+        #[cfg(not(feature = "fips"))]
+        {
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        }
     });
+
+    result
 }

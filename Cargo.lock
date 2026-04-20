@@ -3909,7 +3909,6 @@ dependencies = [
  "cf-types-registry",
  "clap",
  "mimalloc",
- "rustls",
  "serde-saphyr 0.0.16",
  "serde_json",
  "tempfile",

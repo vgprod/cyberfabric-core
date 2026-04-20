@@ -15,7 +15,6 @@
 //! Backend types for spawning `OoP` modules have been moved to `modkit::backends`.
 
 pub mod config;
-#[cfg(feature = "fips")]
 mod crypto;
 pub mod host;
 
@@ -35,5 +34,4 @@ pub use oop::{OopRunOptions, run_oop_with_options};
 mod run;
 pub use run::{run_migrate, run_server};
 
-#[cfg(feature = "fips")]
-pub use crypto::init_fips_crypto_provider;
+pub use crypto::{CryptoProviderError, init_crypto_provider};

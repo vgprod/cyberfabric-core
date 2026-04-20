@@ -43,6 +43,11 @@ fn spawn_signal_handler(cancel: CancellationToken, context: &str) {
 /// - There was a critical error during initialization of the modules
 /// - Problems with the database or third-party services
 /// - An issue during runtime or shutdown
+///
+/// # Preconditions
+///
+/// The TLS crypto provider must be installed before calling this function
+/// (see [`super::init_crypto_provider`]).
 pub async fn run_server(config: AppConfig) -> Result<()> {
     init_procedure(&config).map_err(|e| {
         tracing::error!(error = %e, "Initialization failed");
@@ -113,6 +118,11 @@ pub async fn run_server(config: AppConfig) -> Result<()> {
 /// - Module discovery fails
 /// - Pre-init phase fails
 /// - Migration phase fails
+///
+/// # Preconditions
+///
+/// The TLS crypto provider must be installed before calling this function
+/// (see [`super::init_crypto_provider`]).
 pub async fn run_migrate(config: AppConfig) -> Result<()> {
     init_procedure(&config).map_err(|e| {
         tracing::error!(error = %e, "Initialization failed");
@@ -262,19 +272,18 @@ fn try_build_oop_module_config(
 ///
 /// Steps performed:
 ///
-/// - installs the FIPS crypto provider when that feature is enabled
 /// - initializes tracing/logging (once, guarded by a process-wide `Once`) and metrics
 ///   when OpenTelemetry is enabled
 /// - registers the panic hook used to route panics through tracing
 /// - emits a small startup span and version metadata for diagnostics
 ///
+/// **Note:** the crypto provider must already be installed before calling this
+/// function (see [`super::init_crypto_provider`]).
+///
 /// # Errors
 ///
 /// Returns an error if OpenTelemetry tracing initialization fails while tracing is enabled.
 pub fn init_procedure(config: &AppConfig) -> Result<()> {
-    #[cfg(feature = "fips")]
-    super::init_fips_crypto_provider();
-
     // Build OpenTelemetry layer before logging
     #[cfg(feature = "otel")]
     let otel_layer = if config.opentelemetry.tracing.enabled {
