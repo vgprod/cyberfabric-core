@@ -164,18 +164,3 @@ pub trait ResourceGroupReadHierarchy: Send + Sync {
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroupWithDepth>, ResourceGroupError>;
 }
-
-// @cpt-flow:cpt-cf-resource-group-flow-integration-auth-plugin-routing:p1
-/// Extended read trait for vendor-specific plugin gateway routing.
-///
-/// Extends `ResourceGroupReadHierarchy` with membership listing for
-/// plugin consumers that need both hierarchy and membership data.
-#[async_trait]
-pub trait ResourceGroupReadPluginClient: ResourceGroupReadHierarchy {
-    /// List memberships for plugin consumers.
-    async fn list_memberships(
-        &self,
-        ctx: &SecurityContext,
-        query: &ODataQuery,
-    ) -> Result<Page<ResourceGroupMembership>, ResourceGroupError>;
-}

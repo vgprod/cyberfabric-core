@@ -208,22 +208,6 @@ pub trait ResourceGroupReadHierarchy: Send + Sync {
 }
 ```
 
-## Plugin Trait — `ResourceGroupReadPluginClient`
-
-Gateway delegates to selected scoped plugin (vendor-specific provider path).
-
-```rust
-/// Plugin hierarchy read contract. Extends `ResourceGroupReadHierarchy`.
-#[async_trait]
-pub trait ResourceGroupReadPluginClient: ResourceGroupReadHierarchy {
-    async fn list_memberships(
-        &self,
-        ctx: &SecurityContext,
-        query: ListQuery,
-    ) -> Result<Page<ResourceGroupMembership>, ResourceGroupError>;
-}
-```
-
 ## ClientHub Registration
 
 Single implementation, two registrations:
@@ -279,4 +263,3 @@ let group = rg
 |-------|---------|-----------|---------------|
 | `ResourceGroupClient` | 14 (full CRUD: types, groups, memberships, hierarchy) | Domain services, Apps, Admins | `dyn ResourceGroupClient` |
 | `ResourceGroupReadHierarchy` | 1 (`list_group_depth`) | AuthZ plugin | `dyn ResourceGroupReadHierarchy` |
-| `ResourceGroupReadPluginClient` | 1 + inherited (`list_memberships` + `list_group_depth`) | Vendor-specific plugin gateway | Scoped plugin resolution |

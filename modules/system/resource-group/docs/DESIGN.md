@@ -523,11 +523,10 @@ Integration read models reuse the same SDK structs defined above:
 
 Integration read trait hierarchy (defined in `resource-group-sdk/src/api.rs`):
 
-| Trait | Extends | Methods | Used by |
-| ----- | ------- | ------- | ------- |
-| `ResourceGroupReadHierarchy` | — | `list_group_depth` | AuthZ plugin (hierarchy-only read) |
-| `ResourceGroupReadPluginClient` | `ResourceGroupReadHierarchy` | `list_memberships` | Vendor-specific plugin gateway |
-| `ResourceGroupClient` | — | full CRUD (types, groups, memberships, hierarchy) | General consumers |
+| Trait | Methods | Used by |
+| ----- | ------- | ------- |
+| `ResourceGroupReadHierarchy` | `list_group_depth` | AuthZ plugin (hierarchy-only read) |
+| `ResourceGroupClient` | full CRUD (types, groups, memberships, hierarchy) | General consumers |
 
 ClientHub registration: single implementation (`RgService`), registered as both `dyn ResourceGroupClient` and `dyn ResourceGroupReadHierarchy`. AuthZ plugin resolves `dyn ResourceGroupReadHierarchy`, general consumers resolve `dyn ResourceGroupClient`.
 
@@ -538,7 +537,7 @@ Plugin gateway routing notes:
 - both are registered in ClientHub backed by the same implementation
 - module service resolves configured provider:
   - built-in provider: serve reads from local RG persistence path
-  - vendor-specific provider: resolve plugin instance by configured vendor and delegate to `ResourceGroupReadPluginClient`
+  - vendor-specific provider: resolve plugin instance by configured vendor and delegate to `ResourceGroupReadHierarchy`
 - plugin registration is scoped (GTS instance ID), same pattern as tenant-resolver/authz-resolver gateways
 - `SecurityContext` is forwarded without policy interpretation in gateway layer (including plugin path)
 
@@ -645,7 +644,6 @@ Client initialization: AuthZ plugin resolves `dyn ResourceGroupReadHierarchy` fr
 | ------------------------------------- | ------------------------------- | ------------------------------------------------------------- |
 | SQL database                          | SeaORM repositories             | durable canonical + closure storage                           |
 | AuthZ Resolver SDK                    | `PolicyEnforcer` / `AuthZResolverClient` | AuthZ evaluation for JWT-authenticated RG API requests (write + read) |
-| Vendor-specific RG backend (optional) | `ResourceGroupReadPluginClient` | alternative hierarchy/membership source for integration reads |
 | AuthZ plugin consumer (optional)      | `ResourceGroupReadHierarchy`    | read hierarchy context in PDP logic (narrow, hierarchy-only, MTLS/in-process) |
 | General consumers (optional)          | `ResourceGroupClient`           | full read+write access to types/entities/memberships/hierarchy |
 

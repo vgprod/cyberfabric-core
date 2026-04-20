@@ -153,10 +153,10 @@ fn resource_group_type_camel_case_keys() {
 
 #[test]
 fn resource_group_type_field_renamed() {
-    // TC-SDK-15: "type" not "type_path"
+    // TC-SDK-15: Rust field is `code`, serialized as JSON key `"type"`.
     let group = ResourceGroup {
         id: Uuid::nil(),
-        type_path: "gts.cf.core.rg.type.v1~".to_owned(),
+        code: "gts.cf.core.rg.type.v1~".to_owned(),
         name: "Test".to_owned(),
         hierarchy: GroupHierarchy {
             parent_id: None,
@@ -167,11 +167,11 @@ fn resource_group_type_field_renamed() {
     let json = serde_json::to_value(&group).unwrap();
     assert!(
         json.get("type").is_some(),
-        "expected 'type' key, not 'type_path'"
+        "expected 'type' key on the wire"
     );
     assert!(
-        json.get("type_path").is_none(),
-        "'type_path' should not appear in JSON"
+        json.get("code").is_none(),
+        "'code' (Rust field name) must not leak to JSON — serde renames it to 'type'"
     );
 }
 
@@ -180,7 +180,7 @@ fn resource_group_metadata_absent_when_none() {
     // TC-SDK-16: metadata: None -> no "metadata" key
     let group = ResourceGroup {
         id: Uuid::nil(),
-        type_path: "gts.cf.core.rg.type.v1~".to_owned(),
+        code: "gts.cf.core.rg.type.v1~".to_owned(),
         name: "Test".to_owned(),
         hierarchy: GroupHierarchy {
             parent_id: None,

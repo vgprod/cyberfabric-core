@@ -199,9 +199,9 @@ pub struct GroupHierarchyWithDepth {
 pub struct ResourceGroup {
     /// Group identifier.
     pub id: Uuid,
-    /// GTS chained type path.
+    /// GTS chained type code (e.g. `gts.cf.core.rg.type.v1~x.system.tn.tenant.v1~`).
     #[serde(rename = "type")]
-    pub type_path: String,
+    pub code: String,
     /// Display name.
     pub name: String,
     /// Hierarchy context.
@@ -217,9 +217,9 @@ pub struct ResourceGroup {
 pub struct ResourceGroupWithDepth {
     /// Group identifier.
     pub id: Uuid,
-    /// GTS chained type path.
+    /// GTS chained type code (e.g. `gts.cf.core.rg.type.v1~x.system.tn.tenant.v1~`).
     #[serde(rename = "type")]
-    pub type_path: String,
+    pub code: String,
     /// Display name.
     pub name: String,
     /// Hierarchy context with depth.
@@ -236,9 +236,9 @@ pub struct CreateGroupRequest {
     /// Optional caller-supplied ID (used by seeding for stable identity).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<Uuid>,
-    /// GTS chained type path. Must have prefix `gts.cf.core.rg.type.v1~`.
+    /// GTS chained type code. Must have prefix `gts.cf.core.rg.type.v1~`.
     #[serde(rename = "type")]
-    pub type_path: String,
+    pub code: String,
     /// Display name (1..255 characters).
     pub name: String,
     /// Parent group ID (null for root groups).
@@ -253,9 +253,9 @@ pub struct CreateGroupRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateGroupRequest {
-    /// GTS chained type path. Must have prefix `gts.cf.core.rg.type.v1~`.
+    /// GTS chained type code. Must have prefix `gts.cf.core.rg.type.v1~`.
     #[serde(rename = "type")]
-    pub type_path: String,
+    pub code: String,
     /// Display name (1..255 characters).
     pub name: String,
     /// Parent group ID (null for root groups).

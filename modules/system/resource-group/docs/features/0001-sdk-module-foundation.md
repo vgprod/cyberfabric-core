@@ -165,12 +165,11 @@ The system **MUST** define SDK trait contracts in `resource-group-sdk/src/api.rs
 **Required traits**:
 - `ResourceGroupClient` — full CRUD trait: type management (`create_type`, `get_type`, `list_types`, `update_type`, `delete_type`), group management (`create_group`, `get_group`, `list_groups`, `update_group`, `delete_group`, `list_group_depth`), membership management (`add_membership`, `remove_membership`, `list_memberships`). All methods accept `SecurityContext` as first argument.
 - `ResourceGroupReadHierarchy` — narrow hierarchy-only read trait: `list_group_depth(ctx, group_id, query)` returning `Page<ResourceGroupWithDepth>`. Used exclusively by AuthZ plugin.
-- `ResourceGroupReadPluginClient` — extends `ResourceGroupReadHierarchy` with `list_memberships`. Used for vendor-specific plugin gateway routing.
 
 **Constraints**: `cpt-cf-resource-group-constraint-no-authz-decision`, `cpt-cf-resource-group-constraint-no-sql-filter-generation`
 
 **Touches**:
-- Entities: `ResourceGroupClient`, `ResourceGroupReadHierarchy`, `ResourceGroupReadPluginClient`
+- Entities: `ResourceGroupClient`, `ResourceGroupReadHierarchy`
 
 ### SDK Error Taxonomy
 

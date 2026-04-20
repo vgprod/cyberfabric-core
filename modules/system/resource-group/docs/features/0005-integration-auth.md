@@ -139,7 +139,7 @@ This feature bridges RG with the AuthZ ecosystem. The integration read port prov
    1. [x] - `p1` - Route to local persistence path: execute query against RG database - `inst-plugin-3a`
 4. [x] - `p1` - **IF** vendor-specific provider configured - `inst-plugin-4`
    1. [x] - `p1` - Resolve plugin instance by configured vendor via types-registry (scoped by GTS instance ID) - `inst-plugin-4a`
-   2. [x] - `p1` - Delegate to ResourceGroupReadPluginClient with SecurityContext passthrough - `inst-plugin-4b`
+   2. [x] - `p1` - Delegate to ResourceGroupReadHierarchy with SecurityContext passthrough - `inst-plugin-4b`
 5. [x] - `p1` - **RETURN** results from selected provider - `inst-plugin-5`
 
 ## 3. Processes / Business Logic (CDSL)
@@ -318,7 +318,7 @@ In-source `#[cfg(test)]` tests covering auth-mode decision and tenant-scope enfo
 |----|----------|--------|
 | TC-READ-01 | `list_group_depth` response | Contains `tenant_id` and `metadata` per group; no AuthZ decision fields |
 | TC-READ-02 | Plugin gateway with built-in provider configured | Routes to local persistence path |
-| TC-READ-03 | Plugin gateway with vendor-specific provider configured | Delegates to `ResourceGroupReadPluginClient` |
+| TC-READ-03 | Plugin gateway with vendor-specific provider configured | Delegates to `ResourceGroupReadHierarchy` |
 
 ---
 
