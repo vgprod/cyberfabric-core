@@ -16,6 +16,22 @@ name = "bad_from_to_string"
 path = "ui/bad_from_to_string.rs"
 
 [[example]]
+name = "bad_ufcs_to_string"
+path = "ui/bad_ufcs_to_string.rs"
+
+[[example]]
+name = "bad_generic_error_bound"
+path = "ui/bad_generic_error_bound.rs"
+
+[[example]]
+name = "bad_closure_to_string"
+path = "ui/bad_closure_to_string.rs"
+
+[[example]]
+name = "bad_tryfrom_to_string"
+path = "ui/bad_tryfrom_to_string.rs"
+
+[[example]]
 name = "good_from_preserve"
 path = "ui/good_from_preserve.rs"
 
