@@ -1,6 +1,6 @@
 <!--
 Created:  2026-03-30 by Constructor Tech
-Updated:  2026-03-30 by Constructor Tech
+Updated:  2026-04-22 by Constructor Tech
 -->
 ---
 status: accepted
@@ -54,7 +54,7 @@ STANDARDS ALIGNMENT:
 
 The Serverless Runtime domain model defines a pluggable adapter architecture (`cpt-cf-serverless-runtime-principle-pluggable-adapters`) where execution adapters implement the abstract `ServerlessRuntime` trait. This ADR covers the **Temporal adapter** — one of multiple possible adapter implementations (others include Starlark, WASM, cloud FaaS). The Temporal adapter needs a workflow engine that:
 
-1. **Interprets workflow definitions** authored in the Serverless Workflow Specification DSL ([ADR-0002](0002-cpt-cf-serverless-runtime-adr-workflow-dsl.md)) — parsing task definitions, evaluating expressions, managing data flow between steps, and controlling execution flow (branching, loops, error handling).
+1. **Interprets workflow definitions** authored in the Serverless Workflow Specification DSL ([ADR-0003](0003-cpt-cf-serverless-runtime-adr-workflow-dsl.md)) — parsing task definitions, evaluating expressions, managing data flow between steps, and controlling execution flow (branching, loops, error handling).
 2. **Executes workflows durably** — persisting state across service restarts, providing automatic checkpointing, retry, compensation, and long-running workflow support lasting days to months.
 
 
@@ -91,7 +91,7 @@ Chosen option: **"Option A: Temporal"** as the durable execution backend, with a
 
 **Why Temporal**: It is the only option that satisfies all decision drivers — particularly the combination of self-hostable deployment, Rust SDK availability (`temporal-sdk-core` is written in Rust and usable from Rust; standalone `temporalio-sdk` crate is prerelease as of 2026-03-30 — see [sdk-core](https://github.com/temporalio/sdk-core)), proven scale at production users, long-running workflow support (days to years), saga/compensation patterns, and built-in schedule API.
 
-**Why a custom engine layer on top**: Temporal provides durable execution primitives (checkpointing, retry, state persistence, worker management) but does not natively interpret the Serverless Workflow Specification DSL ([ADR-0002](0002-cpt-cf-serverless-runtime-adr-workflow-dsl.md)). A custom engine layer is required to bridge the gap between declarative workflow definitions and Temporal's workflow-as-code model — handling DSL parsing, task execution mapping, expression evaluation, flow control, and data transformation.
+**Why a custom engine layer on top**: Temporal provides durable execution primitives (checkpointing, retry, state persistence, worker management) but does not natively interpret the Serverless Workflow Specification DSL ([ADR-0003](0003-cpt-cf-serverless-runtime-adr-workflow-dsl.md)). A custom engine layer is required to bridge the gap between declarative workflow definitions and Temporal's workflow-as-code model — handling DSL parsing, task execution mapping, expression evaluation, flow control, and data transformation.
 
 ### Consequences
 
@@ -99,7 +99,7 @@ Chosen option: **"Option A: Temporal"** as the durable execution backend, with a
 * The engine architecture has two layers: the Temporal SDK layer (durable execution, state persistence, retry, scheduling) and a custom workflow engine layer on top (DSL parsing, task execution, expression evaluation, flow control).
 * A Temporal Server deployment becomes an infrastructure dependency. The engine connects to Temporal Server via the Temporal Rust SDK (`temporal-sdk-core`). Temporal Server itself requires a persistence backend (PostgreSQL, MySQL, or Cassandra).
 * Multi-tenant isolation is achieved at the application layer through `tenant_id`/`user_id` scoping in database queries and ownership checks.
-* Compensation is implemented at the DSL level through Try/Raise task composition (see [ADR-0002](0002-cpt-cf-serverless-runtime-adr-workflow-dsl.md)); the engine provides the durable execution guarantees that make this reliable.
+* Compensation is implemented at the DSL level through Try/Raise task composition (see [ADR-0003](0003-cpt-cf-serverless-runtime-adr-workflow-dsl.md)); the engine provides the durable execution guarantees that make this reliable.
 * Schedule management maps to Temporal's built-in Schedule API.
 * The engine integrates as a standard ModKit plugin module.
 
@@ -159,7 +159,7 @@ Camunda provides BPMN-based workflow orchestration. Camunda 8 (Zeebe) offers a c
 | Neutral | Strong enterprise governance | Built-in audit trails, user task management, and decision tables |
 | Good | Horizontal scalability | Zeebe's partitioned architecture scales to high throughput |
 | Bad | No Rust SDK | Java/C# SDKs only (Go SDK deprecated); Rust integration requires gRPC client implementation from scratch |
-| Bad | BPMN-centric model | Forces BPMN as the workflow definition format, which conflicts with the chosen Serverless Workflow Specification DSL ([ADR-0002](0002-cpt-cf-serverless-runtime-adr-workflow-dsl.md)) |
+| Bad | BPMN-centric model | Forces BPMN as the workflow definition format, which conflicts with the chosen Serverless Workflow Specification DSL ([ADR-0003](0003-cpt-cf-serverless-runtime-adr-workflow-dsl.md)) |
 | Bad | Heavier operational footprint | Zeebe requires its own cluster infrastructure with significant memory and storage requirements |
 
 ### Option D: Restate
@@ -223,7 +223,7 @@ Temporal Server adds a network-accessible infrastructure component (gRPC Fronten
 
 - **PRD**: [PRD.md](../PRD.md)
 - **DESIGN**: [DESIGN.md](../DESIGN.md)
-- **Related ADR**: [ADR-0002: Serverless Workflow Specification as Workflow DSL](0002-cpt-cf-serverless-runtime-adr-workflow-dsl.md) — the DSL that this engine interprets and executes
+- **Related ADR**: [ADR-0003: Serverless Workflow Specification as Workflow DSL](0003-cpt-cf-serverless-runtime-adr-workflow-dsl.md) — the DSL that this engine interprets and executes
 
 This decision directly addresses the following requirements and design elements:
 
