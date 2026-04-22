@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "gts://gts.cyberfabric.platform.entities.tenant_id.v1",
+  "$id": "gts://gts.cyberfabric.platform.entities.tenant_id.v1~",
   "title": "GTS Tenant ID",
   "description": "GTS ID for a platform tenant entity (extracted from JWT tenant_id claim)",
   "type": "string",

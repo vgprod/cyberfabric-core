@@ -1,12 +1,11 @@
 use std::sync::Arc;
 
 use super::ControlPlaneService;
-use std::net::IpAddr;
 
 use crate::domain::error::DomainError;
 use crate::domain::model::{
-    CreateRouteRequest, CreateUpstreamRequest, Endpoint, ListQuery, Route, UpdateRouteRequest,
-    UpdateUpstreamRequest, Upstream,
+    CreateRouteRequest, CreateUpstreamRequest, Endpoint, ListQuery, MatchRules, Route,
+    UpdateRouteRequest, UpdateUpstreamRequest, Upstream,
 };
 use crate::domain::repo::{RouteRepository, UpstreamRepository};
 
@@ -76,6 +75,9 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
         req: CreateUpstreamRequest,
     ) -> Result<Upstream, DomainError> {
         validate_endpoints(&req.server.endpoints)?;
+        if let Some(ref cors) = req.cors {
+            crate::domain::cors::validate_cors_config(cors)?;
+        }
 
         // Enforce alias derivation / explicit rules.
         let alias = enforce_alias_create(req.alias.as_deref(), &req.server.endpoints)?;
@@ -94,6 +96,7 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
                 auth: req.auth.as_ref(),
                 rate_limit: req.rate_limit.as_ref(),
                 plugins: req.plugins.as_ref(),
+                cors: req.cors.as_ref(),
             },
         )
         .await?;
@@ -109,6 +112,7 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
             headers: req.headers,
             plugins: req.plugins,
             rate_limit: req.rate_limit,
+            cors: req.cors,
             tags: req.tags,
         };
 
@@ -154,14 +158,10 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
         // Snapshot old endpoints before applying server update (needed for alias enforcement).
         let old_endpoints = existing.server.endpoints.clone();
 
-        // Apply partial update.
-        if let Some(server) = req.server {
-            validate_endpoints(&server.endpoints)?;
-            existing.server = server;
-        }
-        if let Some(protocol) = req.protocol {
-            existing.protocol = protocol;
-        }
+        // Full replacement: validate and apply server.
+        validate_endpoints(&req.server.endpoints)?;
+        existing.server = req.server;
+        existing.protocol = req.protocol;
 
         // Enforce alias re-evaluation when endpoints change.
         let endpoints_changed = existing.server.endpoints != old_endpoints;
@@ -190,12 +190,10 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
 
         // Validate ancestor bind constraints if the resulting alias matches
         // an ancestor upstream.
-        let effective_auth = req.auth.as_ref().or(existing.auth.as_ref());
-        let effective_rate_limit = req.rate_limit.as_ref().or(existing.rate_limit.as_ref());
-        let effective_plugins = req.plugins.as_ref().or(existing.plugins.as_ref());
-        let has_overrides = effective_auth.is_some()
-            || effective_rate_limit.is_some()
-            || effective_plugins.is_some();
+        let has_overrides = req.auth.is_some()
+            || req.rate_limit.is_some()
+            || req.plugins.is_some()
+            || req.cors.is_some();
 
         if has_overrides || endpoints_changed || req.alias.is_some() {
             let tenant_chain = self.build_tenant_chain(ctx).await?;
@@ -204,32 +202,26 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
                 &tenant_chain,
                 &existing.alias,
                 &BindOverrides {
-                    auth: effective_auth,
-                    rate_limit: effective_rate_limit,
-                    plugins: effective_plugins,
+                    auth: req.auth.as_ref(),
+                    rate_limit: req.rate_limit.as_ref(),
+                    plugins: req.plugins.as_ref(),
+                    cors: req.cors.as_ref(),
                 },
             )
             .await?;
         }
 
-        if let Some(auth) = req.auth {
-            existing.auth = Some(auth);
+        // Full replacement: directly assign all fields (None = unset).
+        existing.auth = req.auth;
+        existing.headers = req.headers;
+        existing.plugins = req.plugins;
+        existing.rate_limit = req.rate_limit;
+        if let Some(ref cors) = req.cors {
+            crate::domain::cors::validate_cors_config(cors)?;
         }
-        if let Some(headers) = req.headers {
-            existing.headers = Some(headers);
-        }
-        if let Some(plugins) = req.plugins {
-            existing.plugins = Some(plugins);
-        }
-        if let Some(rate_limit) = req.rate_limit {
-            existing.rate_limit = Some(rate_limit);
-        }
-        if let Some(tags) = req.tags {
-            existing.tags = tags;
-        }
-        if let Some(enabled) = req.enabled {
-            existing.enabled = enabled;
-        }
+        existing.cors = req.cors;
+        existing.tags = req.tags;
+        existing.enabled = req.enabled;
 
         self.upstreams
             .update(existing)
@@ -257,6 +249,10 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
         ctx: &SecurityContext,
         req: CreateRouteRequest,
     ) -> Result<Route, DomainError> {
+        if let Some(ref cors) = req.cors {
+            crate::domain::cors::validate_cors_config(cors)?;
+        }
+
         let tenant_id = ctx.subject_tenant_id();
         // Validate that the upstream exists and belongs to this tenant.
         self.upstreams
@@ -276,10 +272,14 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
             match_rules: req.match_rules,
             plugins: req.plugins,
             rate_limit: req.rate_limit,
+            cors: req.cors,
             tags: req.tags,
             priority: req.priority,
             enabled: req.enabled,
         };
+
+        validate_match_rules(&route.match_rules)?;
+        self.check_route_overlap(&route, None).await?;
 
         self.routes.create(route).await.map_err(DomainError::from)
     }
@@ -295,12 +295,12 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
     async fn list_routes(
         &self,
         ctx: &SecurityContext,
-        upstream_id: Uuid,
+        upstream_id: Option<Uuid>,
         query: &ListQuery,
     ) -> Result<Vec<Route>, DomainError> {
         let tenant_id = ctx.subject_tenant_id();
         self.routes
-            .list_by_upstream(tenant_id, upstream_id, query)
+            .list(tenant_id, upstream_id, query)
             .await
             .map_err(DomainError::from)
     }
@@ -318,24 +318,21 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
             .await
             .map_err(|_| DomainError::not_found("route", id))?;
 
-        if let Some(match_rules) = req.match_rules {
-            existing.match_rules = match_rules;
+        // Full replacement: directly assign all fields (None = unset).
+        existing.match_rules = req.match_rules;
+        existing.plugins = req.plugins;
+        existing.rate_limit = req.rate_limit;
+        if let Some(ref cors) = req.cors {
+            crate::domain::cors::validate_cors_config(cors)?;
         }
-        if let Some(plugins) = req.plugins {
-            existing.plugins = Some(plugins);
-        }
-        if let Some(rate_limit) = req.rate_limit {
-            existing.rate_limit = Some(rate_limit);
-        }
-        if let Some(tags) = req.tags {
-            existing.tags = tags;
-        }
-        if let Some(priority) = req.priority {
-            existing.priority = priority;
-        }
-        if let Some(enabled) = req.enabled {
-            existing.enabled = enabled;
-        }
+        existing.cors = req.cors;
+        existing.tags = req.tags;
+        existing.priority = req.priority;
+        existing.enabled = req.enabled;
+
+        validate_match_rules(&existing.match_rules)?;
+        self.check_route_overlap(&existing, Some(existing.id))
+            .await?;
 
         self.routes
             .update(existing)
@@ -378,6 +375,75 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
 // ===========================================================================
 
 impl ControlPlaneServiceImpl {
+    /// Check that no existing **enabled** route under the same upstream shares
+    /// `(path_prefix, priority, method)` with the candidate route.
+    ///
+    /// `exclude_id` is `Some(route.id)` on update to skip the route being
+    /// modified (it will be compared against its new state, not itself).
+    ///
+    /// Returns `DomainError::Conflict` on violation (maps to 409).
+    async fn check_route_overlap(
+        &self,
+        candidate: &Route,
+        exclude_id: Option<Uuid>,
+    ) -> Result<(), DomainError> {
+        // Disabled routes cannot cause match-time ambiguity.
+        if !candidate.enabled {
+            return Ok(());
+        }
+
+        let candidate_http = match &candidate.match_rules.http {
+            Some(h) => h,
+            None => return Ok(()), // No HTTP match rules → no overlap to check.
+        };
+
+        // Fetch all routes for this (tenant, upstream).
+        let all = self
+            .routes
+            .list(
+                candidate.tenant_id,
+                Some(candidate.upstream_id),
+                &ListQuery {
+                    top: u32::MAX,
+                    skip: 0,
+                },
+            )
+            .await
+            .map_err(DomainError::from)?;
+
+        for existing in &all {
+            // Skip self on update.
+            if Some(existing.id) == exclude_id {
+                continue;
+            }
+            // Only enabled routes can conflict.
+            if !existing.enabled {
+                continue;
+            }
+            // Must have HTTP match rules.
+            let Some(existing_http) = &existing.match_rules.http else {
+                continue;
+            };
+            // Must share path and priority.
+            if existing_http.path != candidate_http.path || existing.priority != candidate.priority
+            {
+                continue;
+            }
+            // Check for any overlapping method.
+            for m in &candidate_http.methods {
+                if existing_http.methods.contains(m) {
+                    return Err(DomainError::conflict(format!(
+                        "route overlap: an enabled route already exists on upstream '{}' \
+                         with path '{}', priority {}, method {:?}",
+                        candidate.upstream_id, candidate_http.path, candidate.priority, m
+                    )));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Validate bind constraints against the **closest** ancestor with a matching
     /// alias. Delegates to [`validate_bind_constraints`] for policy permissions,
     /// sharing mode enforcement, and `secret_ref` accessibility.
@@ -580,6 +646,22 @@ impl ControlPlaneServiceImpl {
 // Free functions — validation, permissions, visibility, config merge, alias
 // ===========================================================================
 
+/// Ensure exactly one of `http` or `grpc` is present in the match rules.
+///
+/// Rejects routes where both fields are `None` (matches nothing) or both
+/// are `Some` (ambiguous protocol).
+fn validate_match_rules(rules: &MatchRules) -> Result<(), DomainError> {
+    match (&rules.http, &rules.grpc) {
+        (None, None) => Err(DomainError::validation(
+            "match rules must specify exactly one of 'http' or 'grpc'",
+        )),
+        (Some(_), Some(_)) => Err(DomainError::validation(
+            "match rules must specify exactly one of 'http' or 'grpc', not both",
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Validate the endpoint list for a server configuration.
 ///
 /// Rules:
@@ -603,10 +685,7 @@ fn validate_endpoints(endpoints: &[Endpoint]) -> Result<(), DomainError> {
     // Enabling IPv6 requires SSRF protections (deny-lists for link-local, private
     // ranges, IPv4-mapped addresses).
     for (i, ep) in endpoints.iter().enumerate() {
-        if strip_brackets(&ep.host)
-            .parse::<std::net::Ipv6Addr>()
-            .is_ok()
-        {
+        if ep.normalized_host().parse::<std::net::Ipv6Addr>().is_ok() {
             return Err(DomainError::validation(format!(
                 "endpoint[{i}] uses IPv6 address '{}'; IPv6 endpoints are not yet supported",
                 ep.host
@@ -615,10 +694,7 @@ fn validate_endpoints(endpoints: &[Endpoint]) -> Result<(), DomainError> {
     }
 
     // Check all-IP vs all-hostname consistency.
-    let ip_count = endpoints
-        .iter()
-        .filter(|ep| strip_brackets(&ep.host).parse::<IpAddr>().is_ok())
-        .count();
+    let ip_count = endpoints.iter().filter(|ep| ep.is_ip()).count();
     if ip_count != 0 && ip_count != endpoints.len() {
         return Err(DomainError::validation(
             "all endpoints must use either IP addresses or hostnames; mixed configurations are not allowed",
@@ -737,14 +813,6 @@ fn validate_alias(alias: &str) -> Result<(), DomainError> {
     Ok(())
 }
 
-/// Strip surrounding `[` and `]` from a host string so that bracketed IPv6
-/// literals (e.g. `[2001:db8::1]`) can be parsed by `Ipv6Addr` / `IpAddr`.
-fn strip_brackets(host: &str) -> &str {
-    host.strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(host)
-}
-
 /// Normalize an alias to lowercase. Hostname trailing dots are already
 /// handled by `Endpoint::normalized_host()` during derivation; this covers
 /// user-provided explicit aliases. All trailing dots are stripped.
@@ -754,10 +822,7 @@ fn normalize_alias(alias: &str) -> String {
 
 /// Check whether the given endpoints are all IP addresses.
 fn endpoints_are_ip(endpoints: &[Endpoint]) -> bool {
-    !endpoints.is_empty()
-        && endpoints
-            .iter()
-            .all(|ep| strip_brackets(&ep.host).parse::<IpAddr>().is_ok())
+    !endpoints.is_empty() && endpoints.iter().all(Endpoint::is_ip)
 }
 
 /// Attempt to derive an alias from the endpoint list.
@@ -963,6 +1028,7 @@ struct BindOverrides<'a> {
     auth: Option<&'a crate::domain::model::AuthConfig>,
     rate_limit: Option<&'a crate::domain::model::RateLimitConfig>,
     plugins: Option<&'a crate::domain::model::PluginsConfig>,
+    cors: Option<&'a crate::domain::model::CorsConfig>,
 }
 
 /// Validate bind constraints when a descendant creates or updates an
@@ -1090,6 +1156,23 @@ async fn validate_bind_constraints(
         }
     }
 
+    // CORS sharing mode constraints (no override permission required).
+    if overrides.cors.is_some() {
+        match ancestor.cors.as_ref().map(|c| c.sharing) {
+            Some(SharingMode::Enforce) => {
+                return Err(DomainError::validation(
+                    "cannot override cors: ancestor upstream has sharing mode 'enforce'",
+                ));
+            }
+            Some(SharingMode::Private) => {
+                return Err(DomainError::validation(
+                    "cannot override cors: ancestor upstream field is private",
+                ));
+            }
+            _ => {}
+        }
+    }
+
     Ok(())
 }
 
@@ -1131,15 +1214,12 @@ async fn validate_secret_ref_accessible(
 ///
 /// Per `cpt-cf-oagw-algo-tenant-alias-shadow` step 2b, an ancestor upstream is
 /// visible if its own tenant matches the requester OR any per-field sharing flag
-/// (`auth`, `rate_limit`, `plugins`) is not `private`.
+/// (`auth`, `rate_limit`, `plugins`, `cors`) is not `private`.
 ///
 /// Returns `false` when all shareable fields are `None` — this is intentional.
-/// An upstream with no auth, rate_limit, or plugins has no configuration to
-/// share with descendants, so it is treated as invisible. Fields without a
+/// An upstream with no auth, rate_limit, plugins, or cors has no configuration
+/// to share with descendants, so it is treated as invisible. Fields without a
 /// sharing mode (e.g. `headers`) do not contribute to visibility.
-///
-/// TODO: when CORS sharing mode lands on the domain model, add `cors` to
-/// the visibility check per the spec (`cors_sharing` is listed in step 2b).
 fn is_visible_to_descendant(upstream: &Upstream) -> bool {
     use crate::domain::model::SharingMode;
 
@@ -1155,8 +1235,12 @@ fn is_visible_to_descendant(upstream: &Upstream) -> bool {
         .plugins
         .as_ref()
         .is_some_and(|p| p.sharing != SharingMode::Private);
+    let cors_shared = upstream
+        .cors
+        .as_ref()
+        .is_some_and(|c| c.sharing != SharingMode::Private);
 
-    auth_shared || rate_shared || plugins_shared
+    auth_shared || rate_shared || plugins_shared || cors_shared
 }
 
 /// Compute the effective upstream configuration by merging ancestor upstreams
@@ -1195,6 +1279,9 @@ pub(crate) fn compute_effective_config(
 
         // Plugins merge
         merge_plugins(&mut effective, layer);
+
+        // CORS merge
+        merge_cors(&mut effective, layer)?;
 
         // Tags: union (add-only)
         for tag in &layer.tags {
@@ -1245,6 +1332,35 @@ pub(crate) fn compute_effective_config(
                 _ => {
                     effective.rate_limit =
                         Some(min_rate_limit(effective.rate_limit.as_ref(), route_rl));
+                }
+            }
+        }
+
+        // Route CORS: follows same sharing semantics as upstream-level merge.
+        // Per inst-merge-3a5: private → skip; inherit → union origins;
+        // enforce → use upstream CORS (keep effective unchanged).
+        if let Some(ref route_cors) = route.cors {
+            let effective_is_enforced = effective
+                .cors
+                .as_ref()
+                .is_some_and(|c| c.sharing == SharingMode::Enforce);
+            if !effective_is_enforced {
+                match route_cors.sharing {
+                    SharingMode::Private | SharingMode::Enforce => {
+                        // Private → skip; Enforce → use upstream CORS.
+                    }
+                    SharingMode::Inherit => {
+                        let mut merged = route_cors.clone();
+                        if let Some(ref upstream_cors) = effective.cors {
+                            for origin in &upstream_cors.allowed_origins {
+                                if !merged.allowed_origins.contains(origin) {
+                                    merged.allowed_origins.push(origin.clone());
+                                }
+                            }
+                        }
+                        crate::domain::cors::validate_cors_config(&merged)?;
+                        effective.cors = Some(merged);
+                    }
                 }
             }
         }
@@ -1322,6 +1438,68 @@ fn merge_rate_limit(effective: &mut Upstream, layer: &Upstream) {
             }
         },
     }
+}
+
+/// Merge CORS config from a descendant layer onto the effective config.
+///
+/// Per `inst-merge-3a5` (feature 0005 — tenant hierarchy):
+/// - `Private`  → skip (do not modify effective).
+/// - Absent     → inherit from previous level; Private must not propagate.
+/// - `Inherit`  → descendant config wins, `allowed_origins` is the union
+///   of ancestor + descendant origins (deduped); Private ancestor origins
+///   are excluded from the union.
+/// - `Enforce`  → use ancestor CORS (keep effective unchanged).
+///
+/// Ancestor enforce is sticky: once effective is `Enforce`, no descendant
+/// can change it regardless of sharing mode.
+fn merge_cors(effective: &mut Upstream, layer: &Upstream) -> Result<(), DomainError> {
+    use crate::domain::model::SharingMode;
+
+    let effective_is_enforced = effective
+        .cors
+        .as_ref()
+        .is_some_and(|c| c.sharing == SharingMode::Enforce);
+
+    match &layer.cors {
+        None => {
+            // Absent → inherit from previous level, but Private must not propagate.
+            if effective
+                .cors
+                .as_ref()
+                .is_some_and(|c| c.sharing == SharingMode::Private)
+            {
+                effective.cors = None;
+            }
+        }
+        Some(_) if effective_is_enforced => {
+            // Ancestor enforced — no descendant can change it.
+        }
+        Some(descendant_cors) => match descendant_cors.sharing {
+            SharingMode::Private => {
+                // Per inst-merge-3a5: private → skip (do not modify effective).
+            }
+            SharingMode::Enforce => {
+                // Per inst-merge-3a5: enforce → use ancestor CORS (keep effective unchanged).
+            }
+            SharingMode::Inherit => {
+                // Union allowed_origins from ancestor + descendant, skipping Private ancestor.
+                let mut merged = descendant_cors.clone();
+                if let Some(ref ancestor) = effective.cors
+                    && ancestor.sharing != SharingMode::Private
+                {
+                    for origin in &ancestor.allowed_origins {
+                        if !merged.allowed_origins.contains(origin) {
+                            merged.allowed_origins.push(origin.clone());
+                        }
+                    }
+                }
+                crate::domain::cors::validate_cors_config(&merged)?;
+                effective.cors = Some(merged);
+            }
+        },
+    }
+
+    Ok(())
 }
 
 /// Return the stricter of two rate limit configs (lower rate wins).
@@ -1488,6 +1666,7 @@ mod tests {
             headers: None,
             plugins: None,
             rate_limit: None,
+            cors: None,
             tags: vec![],
             enabled: true,
         }
@@ -1509,8 +1688,38 @@ mod tests {
             headers: None,
             plugins: None,
             rate_limit: None,
+            cors: None,
             tags: vec![],
             enabled: true,
+        }
+    }
+
+    /// Build an UpdateUpstreamRequest that mirrors the given upstream (full replacement).
+    fn make_update_from_upstream(u: &Upstream) -> UpdateUpstreamRequest {
+        UpdateUpstreamRequest {
+            server: u.server.clone(),
+            protocol: u.protocol.clone(),
+            alias: Some(u.alias.clone()),
+            auth: u.auth.clone(),
+            headers: u.headers.clone(),
+            plugins: u.plugins.clone(),
+            rate_limit: u.rate_limit.clone(),
+            cors: u.cors.clone(),
+            tags: u.tags.clone(),
+            enabled: u.enabled,
+        }
+    }
+
+    /// Build an UpdateRouteRequest that mirrors the given route (full replacement).
+    fn make_update_from_route(r: &Route) -> UpdateRouteRequest {
+        UpdateRouteRequest {
+            match_rules: r.match_rules.clone(),
+            plugins: r.plugins.clone(),
+            rate_limit: r.rate_limit.clone(),
+            cors: r.cors.clone(),
+            tags: r.tags.clone(),
+            priority: r.priority,
+            enabled: r.enabled,
         }
     }
 
@@ -1528,6 +1737,7 @@ mod tests {
             },
             plugins: None,
             rate_limit: None,
+            cors: None,
             tags: vec![],
             priority: 0,
             enabled: true,
@@ -1552,17 +1762,9 @@ mod tests {
         assert_eq!(fetched.id, u.id);
 
         // Update alias (allowed for IP-based endpoints)
-        let updated = svc
-            .update_upstream(
-                &ctx,
-                u.id,
-                UpdateUpstreamRequest {
-                    alias: Some("openai-v2".into()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+        let mut update_req = make_update_from_upstream(&u);
+        update_req.alias = Some("openai-v2".into());
+        let updated = svc.update_upstream(&ctx, u.id, update_req).await.unwrap();
         assert_eq!(updated.alias, "openai-v2");
         assert_eq!(updated.id, u.id);
 
@@ -1606,6 +1808,7 @@ mod tests {
             headers: None,
             plugins: None,
             rate_limit: None,
+            cors: None,
             tags: vec![],
             enabled: true,
         };
@@ -1721,16 +1924,9 @@ mod tests {
             .unwrap();
 
         // Disable the upstream.
-        svc.update_upstream(
-            &ctx,
-            u.id,
-            UpdateUpstreamRequest {
-                enabled: Some(false),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
+        let mut update_req = make_update_from_upstream(&u);
+        update_req.enabled = false;
+        svc.update_upstream(&ctx, u.id, update_req).await.unwrap();
 
         let chain = svc.build_tenant_chain(&ctx).await.unwrap();
         let err = svc
@@ -2364,8 +2560,8 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::domain::model::{
-        AuthConfig, PluginBinding, PluginsConfig, RateLimitAlgorithm, RateLimitConfig,
-        RateLimitScope, RateLimitStrategy, SharingMode, SustainedRate, Window,
+        AuthConfig, CorsConfig, CorsHttpMethod, PluginBinding, PluginsConfig, RateLimitAlgorithm,
+        RateLimitConfig, RateLimitScope, RateLimitStrategy, SharingMode, SustainedRate, Window,
     };
 
     fn make_upstream(
@@ -2393,6 +2589,7 @@ mod tests {
             headers: None,
             plugins,
             rate_limit,
+            cors: None,
             tags,
         }
     }
@@ -2625,6 +2822,7 @@ mod tests {
             },
             plugins: None,
             rate_limit: Some(make_rate_limit(SharingMode::Inherit, 50, Window::Minute)),
+            cors: None,
             tags: vec![],
             priority: 0,
             enabled: true,
@@ -2717,7 +2915,303 @@ mod tests {
         assert_eq!(effective.tenant_id, child_id);
     }
 
+    // -- CORS effective config merge tests --
+
+    fn make_cors(sharing: SharingMode, origins: Vec<&str>) -> CorsConfig {
+        CorsConfig {
+            sharing,
+            enabled: true,
+            allowed_origins: origins.into_iter().map(String::from).collect(),
+            allowed_methods: vec![CorsHttpMethod::Get, CorsHttpMethod::Post],
+            expose_headers: vec![],
+            allow_credentials: false,
+        }
+    }
+
+    #[test]
+    fn effective_config_cors_inherit_unions_origins() {
+        let t = Uuid::new_v4();
+        let mut root = make_upstream(t, "api", None, None, None, vec![]);
+        root.cors = Some(make_cors(SharingMode::Inherit, vec!["https://parent.com"]));
+        let mut child = make_upstream(t, "api", None, None, None, vec![]);
+        child.cors = Some(make_cors(SharingMode::Inherit, vec!["https://child.com"]));
+
+        let effective = compute_effective_config(&[root, child], None).unwrap();
+        let cors = effective.cors.unwrap();
+        assert!(cors.allowed_origins.contains(&"https://child.com".into()));
+        assert!(cors.allowed_origins.contains(&"https://parent.com".into()));
+    }
+
+    #[test]
+    fn effective_config_cors_private_descendant_skips() {
+        // Per inst-merge-3a5: private → skip (do not modify effective).
+        // When child has Private CORS, the ancestor's CORS is preserved.
+        let t = Uuid::new_v4();
+        let mut root = make_upstream(t, "api", None, None, None, vec![]);
+        root.cors = Some(make_cors(SharingMode::Inherit, vec!["https://parent.com"]));
+        let mut child = make_upstream(t, "api", None, None, None, vec![]);
+        child.cors = Some(make_cors(SharingMode::Private, vec!["https://child.com"]));
+
+        let effective = compute_effective_config(&[root, child], None).unwrap();
+        let cors = effective.cors.unwrap();
+        assert!(
+            cors.allowed_origins.contains(&"https://parent.com".into()),
+            "Private skip: ancestor CORS should be preserved"
+        );
+        assert!(
+            !cors.allowed_origins.contains(&"https://child.com".into()),
+            "Private skip: child origins should NOT appear in effective"
+        );
+    }
+
+    #[test]
+    fn effective_config_cors_enforce_blocks_descendant() {
+        let t = Uuid::new_v4();
+        let mut root = make_upstream(t, "api", None, None, None, vec![]);
+        root.cors = Some(make_cors(SharingMode::Enforce, vec!["https://locked.com"]));
+        let mut child = make_upstream(t, "api", None, None, None, vec![]);
+        child.cors = Some(make_cors(SharingMode::Inherit, vec!["https://child.com"]));
+
+        let effective = compute_effective_config(&[root, child], None).unwrap();
+        let cors = effective.cors.unwrap();
+        assert_eq!(cors.allowed_origins, vec!["https://locked.com"]);
+    }
+
+    #[test]
+    fn effective_config_route_cors_inherit_unions_with_upstream() {
+        let t = Uuid::new_v4();
+        let mut upstream = make_upstream(t, "api", None, None, None, vec![]);
+        upstream.cors = Some(make_cors(
+            SharingMode::Inherit,
+            vec!["https://upstream.com"],
+        ));
+
+        let route = Route {
+            id: Uuid::new_v4(),
+            tenant_id: t,
+            upstream_id: upstream.id,
+            match_rules: MatchRules {
+                http: Some(HttpMatch {
+                    methods: vec![HttpMethod::Get],
+                    path: "/v1".into(),
+                    query_allowlist: vec![],
+                    path_suffix_mode: PathSuffixMode::Append,
+                }),
+                grpc: None,
+            },
+            plugins: None,
+            rate_limit: None,
+            cors: Some(make_cors(SharingMode::Inherit, vec!["https://route.com"])),
+            tags: vec![],
+            priority: 0,
+            enabled: true,
+        };
+
+        let effective =
+            compute_effective_config(std::slice::from_ref(&upstream), Some(&route)).unwrap();
+        let cors = effective.cors.unwrap();
+        assert!(cors.allowed_origins.contains(&"https://route.com".into()));
+        assert!(
+            cors.allowed_origins
+                .contains(&"https://upstream.com".into())
+        );
+    }
+
+    #[test]
+    fn effective_config_cors_private_ancestor_not_inherited_when_absent() {
+        // When ancestor CORS is Private and child has no CORS, effective should be None.
+        let t = Uuid::new_v4();
+        let mut root = make_upstream(t, "api", None, None, None, vec![]);
+        root.cors = Some(make_cors(SharingMode::Private, vec!["https://root.com"]));
+        let child = make_upstream(t, "api", None, None, None, vec![]);
+
+        let effective = compute_effective_config(&[root, child], None).unwrap();
+        assert!(
+            effective.cors.is_none(),
+            "Private ancestor CORS must not propagate to descendants"
+        );
+    }
+
+    #[test]
+    fn effective_config_cors_inherit_skips_private_ancestor_origins() {
+        // When ancestor CORS is Private, its origins should not be unioned into Inherit descendant.
+        let t = Uuid::new_v4();
+        let mut root = make_upstream(t, "api", None, None, None, vec![]);
+        root.cors = Some(make_cors(SharingMode::Private, vec!["https://root.com"]));
+        let mut child = make_upstream(t, "api", None, None, None, vec![]);
+        child.cors = Some(make_cors(SharingMode::Inherit, vec!["https://child.com"]));
+
+        let effective = compute_effective_config(&[root, child], None).unwrap();
+        let cors = effective.cors.unwrap();
+        assert!(cors.allowed_origins.contains(&"https://child.com".into()));
+        assert!(
+            !cors.allowed_origins.contains(&"https://root.com".into()),
+            "Private ancestor origins must not be unioned"
+        );
+    }
+
+    #[test]
+    fn effective_config_cors_enforce_descendant_keeps_ancestor() {
+        // Per inst-merge-3a5: enforce → use ancestor CORS (keep effective unchanged).
+        let t = Uuid::new_v4();
+        let mut root = make_upstream(t, "api", None, None, None, vec![]);
+        root.cors = Some(make_cors(
+            SharingMode::Inherit,
+            vec!["https://ancestor.com"],
+        ));
+        let mut child = make_upstream(t, "api", None, None, None, vec![]);
+        child.cors = Some(make_cors(SharingMode::Enforce, vec!["https://child.com"]));
+
+        let effective = compute_effective_config(&[root, child], None).unwrap();
+        let cors = effective.cors.unwrap();
+        assert_eq!(
+            cors.allowed_origins,
+            vec!["https://ancestor.com"],
+            "Enforce descendant should keep ancestor CORS unchanged"
+        );
+    }
+
+    #[test]
+    fn effective_config_cors_merge_rejects_invalid_union() {
+        // Unioning origins can produce an invalid config (credentials + wildcard).
+        let t = Uuid::new_v4();
+        let mut root = make_upstream(t, "api", None, None, None, vec![]);
+        root.cors = Some(CorsConfig {
+            sharing: SharingMode::Inherit,
+            enabled: true,
+            allowed_origins: vec!["*".into()],
+            allowed_methods: vec![CorsHttpMethod::Get],
+            expose_headers: vec![],
+            allow_credentials: false,
+        });
+        let mut child = make_upstream(t, "api", None, None, None, vec![]);
+        child.cors = Some(CorsConfig {
+            sharing: SharingMode::Inherit,
+            enabled: true,
+            allowed_origins: vec!["https://child.com".into()],
+            allowed_methods: vec![CorsHttpMethod::Get],
+            expose_headers: vec![],
+            allow_credentials: true,
+        });
+
+        let result = compute_effective_config(&[root, child], None);
+        assert!(
+            result.is_err(),
+            "Merged CORS with credentials + wildcard must be rejected"
+        );
+    }
+
+    #[test]
+    fn effective_config_route_cors_merge_rejects_invalid_union() {
+        let t = Uuid::new_v4();
+        let mut upstream = make_upstream(t, "api", None, None, None, vec![]);
+        upstream.cors = Some(CorsConfig {
+            sharing: SharingMode::Inherit,
+            enabled: true,
+            allowed_origins: vec!["*".into()],
+            allowed_methods: vec![CorsHttpMethod::Get],
+            expose_headers: vec![],
+            allow_credentials: false,
+        });
+
+        let route = Route {
+            id: Uuid::new_v4(),
+            tenant_id: t,
+            upstream_id: upstream.id,
+            match_rules: MatchRules {
+                http: Some(HttpMatch {
+                    methods: vec![HttpMethod::Get],
+                    path: "/v1".into(),
+                    query_allowlist: vec![],
+                    path_suffix_mode: PathSuffixMode::Append,
+                }),
+                grpc: None,
+            },
+            plugins: None,
+            rate_limit: None,
+            cors: Some(CorsConfig {
+                sharing: SharingMode::Inherit,
+                enabled: true,
+                allowed_origins: vec!["https://route.com".into()],
+                allowed_methods: vec![CorsHttpMethod::Get],
+                expose_headers: vec![],
+                allow_credentials: true,
+            }),
+            tags: vec![],
+            priority: 0,
+            enabled: true,
+        };
+
+        let result = compute_effective_config(std::slice::from_ref(&upstream), Some(&route));
+        assert!(
+            result.is_err(),
+            "Route CORS merge with credentials + wildcard must be rejected"
+        );
+    }
+
     // -- Ancestor bind validation tests --
+
+    #[tokio::test]
+    async fn bind_rejects_cors_override_on_enforce() {
+        let root = Uuid::new_v4();
+        let child = Uuid::new_v4();
+        let resolver =
+            MockTenantResolverClient::with_hierarchy(vec![TenantId(root), TenantId(child)]);
+        let svc = make_service_with_resolver(resolver);
+
+        // Root upstream with enforced CORS.
+        let root_ctx = test_ctx(root);
+        let mut req = make_create_upstream_hostname();
+        req.cors = Some(CorsConfig {
+            sharing: SharingMode::Enforce,
+            enabled: true,
+            allowed_origins: vec!["https://locked.com".into()],
+            allowed_methods: vec![CorsHttpMethod::Get],
+            expose_headers: vec![],
+            allow_credentials: false,
+        });
+        svc.create_upstream(&root_ctx, req).await.unwrap();
+
+        // Child attempts to override CORS → should fail.
+        let child_ctx = test_ctx(child);
+        let mut child_req = make_create_upstream_hostname();
+        child_req.cors = Some(make_cors(SharingMode::Inherit, vec!["https://child.com"]));
+        let result = svc.create_upstream(&child_ctx, child_req).await;
+        assert!(
+            result.is_err(),
+            "CORS override on enforce should be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn bind_rejects_cors_override_on_private() {
+        let root = Uuid::new_v4();
+        let child = Uuid::new_v4();
+        let resolver =
+            MockTenantResolverClient::with_hierarchy(vec![TenantId(root), TenantId(child)]);
+        let svc = make_service_with_resolver(resolver);
+
+        // Root upstream with private CORS but shared auth (so it's visible to descendants).
+        let root_ctx = test_ctx(root);
+        let mut req = make_create_upstream_hostname();
+        req.cors = Some(make_cors(SharingMode::Private, vec!["https://private.com"]));
+        req.auth = Some(AuthConfig {
+            sharing: SharingMode::Inherit,
+            plugin_type: "passthrough".into(),
+            config: None,
+        });
+        svc.create_upstream(&root_ctx, req).await.unwrap();
+
+        // Child attempts to override CORS → should fail (ancestor CORS is private).
+        let child_ctx = test_ctx(child);
+        let mut child_req = make_create_upstream_hostname();
+        child_req.cors = Some(make_cors(SharingMode::Inherit, vec!["https://child.com"]));
+        let result = svc.create_upstream(&child_ctx, child_req).await;
+        assert!(
+            result.is_err(),
+            "CORS override on private should be rejected"
+        );
+    }
 
     #[tokio::test]
     async fn bind_rejects_auth_override_on_enforce() {
@@ -2956,19 +3450,14 @@ mod tests {
             .unwrap();
 
         // Child tries to update auth — should fail because ancestor is enforce.
+        let mut update_req = make_update_from_upstream(&child_upstream);
+        update_req.auth = Some(AuthConfig {
+            plugin_type: "oauth2".into(),
+            sharing: SharingMode::Inherit,
+            config: None,
+        });
         let err = svc
-            .update_upstream(
-                &child_ctx,
-                child_upstream.id,
-                UpdateUpstreamRequest {
-                    auth: Some(AuthConfig {
-                        plugin_type: "oauth2".into(),
-                        sharing: SharingMode::Inherit,
-                        config: None,
-                    }),
-                    ..Default::default()
-                },
-            )
+            .update_upstream(&child_ctx, child_upstream.id, update_req)
             .await
             .unwrap_err();
         match err {
@@ -3008,15 +3497,10 @@ mod tests {
             .unwrap();
 
         // Child updates alias to match ancestor — with allow-all enforcer this passes.
+        let mut update_req = make_update_from_upstream(&child_upstream);
+        update_req.alias = Some("openai".into());
         let updated = svc
-            .update_upstream(
-                &child_ctx,
-                child_upstream.id,
-                UpdateUpstreamRequest {
-                    alias: Some("openai".into()),
-                    ..Default::default()
-                },
-            )
+            .update_upstream(&child_ctx, child_upstream.id, update_req)
             .await
             .unwrap();
         assert_eq!(updated.alias, "openai");
@@ -3052,15 +3536,10 @@ mod tests {
 
         // Alias-only update to match ancestor — must fail because the child's
         // existing auth override conflicts with the ancestor's enforce mode.
+        let mut update_req = make_update_from_upstream(&child_upstream);
+        update_req.alias = Some("openai".into());
         let err = svc
-            .update_upstream(
-                &child_ctx,
-                child_upstream.id,
-                UpdateUpstreamRequest {
-                    alias: Some("openai".into()),
-                    ..Default::default()
-                },
-            )
+            .update_upstream(&child_ctx, child_upstream.id, update_req)
             .await
             .unwrap_err();
         match err {
@@ -3090,19 +3569,14 @@ mod tests {
             .unwrap();
 
         // Update auth — no ancestor match, should succeed without permission checks.
+        let mut update_req = make_update_from_upstream(&child_upstream);
+        update_req.auth = Some(AuthConfig {
+            plugin_type: "oauth2".into(),
+            sharing: SharingMode::Inherit,
+            config: None,
+        });
         let updated = svc
-            .update_upstream(
-                &child_ctx,
-                child_upstream.id,
-                UpdateUpstreamRequest {
-                    auth: Some(AuthConfig {
-                        plugin_type: "oauth2".into(),
-                        sharing: SharingMode::Inherit,
-                        config: None,
-                    }),
-                    ..Default::default()
-                },
-            )
+            .update_upstream(&child_ctx, child_upstream.id, update_req)
             .await
             .unwrap();
         assert_eq!(updated.auth.unwrap().plugin_type, "oauth2");
@@ -3144,6 +3618,7 @@ mod tests {
             },
             plugins: None,
             rate_limit: None,
+            cors: None,
             tags: vec![],
             priority: 0,
             enabled: true,
@@ -3202,6 +3677,7 @@ mod tests {
             },
             plugins: None,
             rate_limit: None,
+            cors: None,
             tags: vec![],
             priority: 0,
             enabled: true,
@@ -3229,6 +3705,7 @@ mod tests {
             },
             plugins: None,
             rate_limit: None,
+            cors: None,
             tags: vec![],
             priority: 0,
             enabled: true,
@@ -3300,6 +3777,7 @@ mod tests {
                 }],
             }),
             rate_limit: None,
+            cors: None,
             tags: vec![],
             priority: 0,
             enabled: true,
@@ -3333,6 +3811,7 @@ mod tests {
             },
             plugins: None,
             rate_limit: Some(make_rate_limit(SharingMode::Private, 10, Window::Minute)),
+            cors: None,
             tags: vec![],
             priority: 0,
             enabled: true,
@@ -3772,6 +4251,7 @@ mod tests {
             headers: None,
             plugins: None,
             rate_limit: None,
+            cors: None,
             tags: vec![],
             enabled: true,
         };
@@ -3792,15 +4272,10 @@ mod tests {
         assert_eq!(u.alias, "api.openai.com");
 
         // Try to override alias on hostname-based upstream — should fail.
+        let mut update_req = make_update_from_upstream(&u);
+        update_req.alias = Some("custom".into());
         let err = svc
-            .update_upstream(
-                &ctx,
-                u.id,
-                UpdateUpstreamRequest {
-                    alias: Some("custom".into()),
-                    ..Default::default()
-                },
-            )
+            .update_upstream(&ctx, u.id, update_req)
             .await
             .unwrap_err();
         assert!(matches!(err, DomainError::Validation { .. }));
@@ -3819,23 +4294,16 @@ mod tests {
         assert_eq!(u.alias, "api.openai.com");
 
         // Update endpoints to a different host — alias should recompute.
-        let updated = svc
-            .update_upstream(
-                &ctx,
-                u.id,
-                UpdateUpstreamRequest {
-                    server: Some(Server {
-                        endpoints: vec![Endpoint {
-                            scheme: Scheme::Https,
-                            host: "api.anthropic.com".into(),
-                            port: 443,
-                        }],
-                    }),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+        let mut update_req = make_update_from_upstream(&u);
+        update_req.server = Server {
+            endpoints: vec![Endpoint {
+                scheme: Scheme::Https,
+                host: "api.anthropic.com".into(),
+                port: 443,
+            }],
+        };
+        update_req.alias = None; // let alias be re-derived
+        let updated = svc.update_upstream(&ctx, u.id, update_req).await.unwrap();
         assert_eq!(updated.alias, "api.anthropic.com");
     }
 
@@ -3851,21 +4319,17 @@ mod tests {
             .unwrap();
 
         // Switch to IP endpoints without providing alias.
+        let mut update_req = make_update_from_upstream(&u);
+        update_req.server = Server {
+            endpoints: vec![Endpoint {
+                scheme: Scheme::Https,
+                host: "10.0.0.1".into(),
+                port: 443,
+            }],
+        };
+        update_req.alias = None; // no explicit alias provided
         let err = svc
-            .update_upstream(
-                &ctx,
-                u.id,
-                UpdateUpstreamRequest {
-                    server: Some(Server {
-                        endpoints: vec![Endpoint {
-                            scheme: Scheme::Https,
-                            host: "10.0.0.1".into(),
-                            port: 443,
-                        }],
-                    }),
-                    ..Default::default()
-                },
-            )
+            .update_upstream(&ctx, u.id, update_req)
             .await
             .unwrap_err();
         assert!(matches!(err, DomainError::Validation { .. }));
@@ -3883,24 +4347,16 @@ mod tests {
             .unwrap();
 
         // Switch to IP endpoints with explicit alias.
-        let updated = svc
-            .update_upstream(
-                &ctx,
-                u.id,
-                UpdateUpstreamRequest {
-                    server: Some(Server {
-                        endpoints: vec![Endpoint {
-                            scheme: Scheme::Https,
-                            host: "10.0.0.1".into(),
-                            port: 443,
-                        }],
-                    }),
-                    alias: Some("my-backend".into()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+        let mut update_req = make_update_from_upstream(&u);
+        update_req.server = Server {
+            endpoints: vec![Endpoint {
+                scheme: Scheme::Https,
+                host: "10.0.0.1".into(),
+                port: 443,
+            }],
+        };
+        update_req.alias = Some("my-backend".into());
+        let updated = svc.update_upstream(&ctx, u.id, update_req).await.unwrap();
         assert_eq!(updated.alias, "my-backend");
     }
 
@@ -3952,6 +4408,7 @@ mod tests {
             headers: None,
             plugins: None,
             rate_limit: None,
+            cors: None,
             tags: vec![],
             enabled: true,
         };
@@ -3987,6 +4444,7 @@ mod tests {
             headers: None,
             plugins: None,
             rate_limit: None,
+            cors: None,
             tags: vec![],
             enabled: true,
         };
@@ -4015,6 +4473,7 @@ mod tests {
             headers: None,
             plugins: None,
             rate_limit: None,
+            cors: None,
             tags: vec![],
             enabled: true,
         };
@@ -4054,6 +4513,7 @@ mod tests {
             headers: None,
             plugins: None,
             rate_limit: None,
+            cors: None,
             tags: vec![],
             enabled: true,
         };
@@ -4094,11 +4554,347 @@ mod tests {
             headers: None,
             plugins: None,
             rate_limit: None,
+            cors: None,
             tags: vec![],
             enabled: true,
         };
 
         let u = svc.create_upstream(&ctx, req).await.unwrap();
         assert_eq!(u.alias, "my-uk-backends");
+    }
+
+    // -- Route overlap determinism tests --
+
+    #[tokio::test]
+    async fn create_route_overlap_same_path_priority_method_returns_conflict() {
+        let svc = make_service();
+        let tenant = Uuid::new_v4();
+        let ctx = test_ctx(tenant);
+
+        let u = svc
+            .create_upstream(&ctx, make_create_upstream_ip("openai"))
+            .await
+            .unwrap();
+
+        // First route succeeds.
+        svc.create_route(&ctx, make_create_route(u.id))
+            .await
+            .unwrap();
+
+        // Second route with identical (path, priority, method) → 409 Conflict.
+        let err = svc
+            .create_route(&ctx, make_create_route(u.id))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DomainError::Conflict { .. }),
+            "expected Conflict, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_route_different_method_no_conflict() {
+        let svc = make_service();
+        let tenant = Uuid::new_v4();
+        let ctx = test_ctx(tenant);
+
+        let u = svc
+            .create_upstream(&ctx, make_create_upstream_ip("openai"))
+            .await
+            .unwrap();
+
+        // POST route.
+        svc.create_route(&ctx, make_create_route(u.id))
+            .await
+            .unwrap();
+
+        // GET route on same path and priority — no overlap.
+        let get_route_req = CreateRouteRequest {
+            upstream_id: u.id,
+            match_rules: MatchRules {
+                http: Some(HttpMatch {
+                    methods: vec![HttpMethod::Get],
+                    path: "/v1/chat/completions".into(),
+                    query_allowlist: vec![],
+                    path_suffix_mode: PathSuffixMode::Append,
+                }),
+                grpc: None,
+            },
+            plugins: None,
+            rate_limit: None,
+            cors: None,
+            tags: vec![],
+            priority: 0,
+            enabled: true,
+        };
+        svc.create_route(&ctx, get_route_req).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_route_different_priority_no_conflict() {
+        let svc = make_service();
+        let tenant = Uuid::new_v4();
+        let ctx = test_ctx(tenant);
+
+        let u = svc
+            .create_upstream(&ctx, make_create_upstream_ip("openai"))
+            .await
+            .unwrap();
+
+        svc.create_route(&ctx, make_create_route(u.id))
+            .await
+            .unwrap();
+
+        // Same path and method, different priority — no overlap.
+        let mut req = make_create_route(u.id);
+        req.priority = 10;
+        svc.create_route(&ctx, req).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_route_different_path_no_conflict() {
+        let svc = make_service();
+        let tenant = Uuid::new_v4();
+        let ctx = test_ctx(tenant);
+
+        let u = svc
+            .create_upstream(&ctx, make_create_upstream_ip("openai"))
+            .await
+            .unwrap();
+
+        svc.create_route(&ctx, make_create_route(u.id))
+            .await
+            .unwrap();
+
+        // Different path — no overlap.
+        let mut req = make_create_route(u.id);
+        req.match_rules.http.as_mut().unwrap().path = "/v1/models".into();
+        svc.create_route(&ctx, req).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_route_disabled_no_conflict() {
+        let svc = make_service();
+        let tenant = Uuid::new_v4();
+        let ctx = test_ctx(tenant);
+
+        let u = svc
+            .create_upstream(&ctx, make_create_upstream_ip("openai"))
+            .await
+            .unwrap();
+
+        svc.create_route(&ctx, make_create_route(u.id))
+            .await
+            .unwrap();
+
+        // Disabled duplicate — no conflict (disabled routes don't cause ambiguity).
+        let mut req = make_create_route(u.id);
+        req.enabled = false;
+        svc.create_route(&ctx, req).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_route_against_disabled_existing_no_conflict() {
+        let svc = make_service();
+        let tenant = Uuid::new_v4();
+        let ctx = test_ctx(tenant);
+
+        let u = svc
+            .create_upstream(&ctx, make_create_upstream_ip("openai"))
+            .await
+            .unwrap();
+
+        // First route is disabled.
+        let mut req = make_create_route(u.id);
+        req.enabled = false;
+        svc.create_route(&ctx, req).await.unwrap();
+
+        // Second route enabled with same tuple — allowed because existing is disabled.
+        svc.create_route(&ctx, make_create_route(u.id))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_route_different_upstream_no_conflict() {
+        let svc = make_service();
+        let tenant = Uuid::new_v4();
+        let ctx = test_ctx(tenant);
+
+        let u1 = svc
+            .create_upstream(&ctx, make_create_upstream_ip("openai"))
+            .await
+            .unwrap();
+        let u2 = svc
+            .create_upstream(&ctx, make_create_upstream_ip("anthropic"))
+            .await
+            .unwrap();
+
+        svc.create_route(&ctx, make_create_route(u1.id))
+            .await
+            .unwrap();
+
+        // Same (path, priority, method) but different upstream — no overlap.
+        svc.create_route(&ctx, make_create_route(u2.id))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_route_partial_method_overlap_returns_conflict() {
+        let svc = make_service();
+        let tenant = Uuid::new_v4();
+        let ctx = test_ctx(tenant);
+
+        let u = svc
+            .create_upstream(&ctx, make_create_upstream_ip("openai"))
+            .await
+            .unwrap();
+
+        // Route with [Post, Put].
+        let req1 = CreateRouteRequest {
+            upstream_id: u.id,
+            match_rules: MatchRules {
+                http: Some(HttpMatch {
+                    methods: vec![HttpMethod::Post, HttpMethod::Put],
+                    path: "/v1/chat".into(),
+                    query_allowlist: vec![],
+                    path_suffix_mode: PathSuffixMode::Append,
+                }),
+                grpc: None,
+            },
+            plugins: None,
+            rate_limit: None,
+            cors: None,
+            tags: vec![],
+            priority: 0,
+            enabled: true,
+        };
+        svc.create_route(&ctx, req1).await.unwrap();
+
+        // Route with [Put, Delete] — overlaps on Put.
+        let req2 = CreateRouteRequest {
+            upstream_id: u.id,
+            match_rules: MatchRules {
+                http: Some(HttpMatch {
+                    methods: vec![HttpMethod::Put, HttpMethod::Delete],
+                    path: "/v1/chat".into(),
+                    query_allowlist: vec![],
+                    path_suffix_mode: PathSuffixMode::Append,
+                }),
+                grpc: None,
+            },
+            plugins: None,
+            rate_limit: None,
+            cors: None,
+            tags: vec![],
+            priority: 0,
+            enabled: true,
+        };
+        let err = svc.create_route(&ctx, req2).await.unwrap_err();
+        assert!(
+            matches!(err, DomainError::Conflict { .. }),
+            "expected Conflict, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_route_introducing_overlap_returns_conflict() {
+        let svc = make_service();
+        let tenant = Uuid::new_v4();
+        let ctx = test_ctx(tenant);
+
+        let u = svc
+            .create_upstream(&ctx, make_create_upstream_ip("openai"))
+            .await
+            .unwrap();
+
+        // Route A: POST /v1/chat, priority 0.
+        let _route_a = svc
+            .create_route(&ctx, make_create_route(u.id))
+            .await
+            .unwrap();
+
+        // Route B: POST /v1/models, priority 0.
+        let mut req_b = make_create_route(u.id);
+        req_b.match_rules.http.as_mut().unwrap().path = "/v1/models".into();
+        let route_b = svc.create_route(&ctx, req_b).await.unwrap();
+
+        // Update route B's path to match route A → conflict.
+        let mut update_req = make_update_from_route(&route_b);
+        update_req.match_rules = MatchRules {
+            http: Some(HttpMatch {
+                methods: vec![HttpMethod::Post],
+                path: "/v1/chat/completions".into(),
+                query_allowlist: vec![],
+                path_suffix_mode: PathSuffixMode::Append,
+            }),
+            grpc: None,
+        };
+        let err = svc
+            .update_route(&ctx, route_b.id, update_req)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DomainError::Conflict { .. }),
+            "expected Conflict, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_route_no_self_conflict() {
+        let svc = make_service();
+        let tenant = Uuid::new_v4();
+        let ctx = test_ctx(tenant);
+
+        let u = svc
+            .create_upstream(&ctx, make_create_upstream_ip("openai"))
+            .await
+            .unwrap();
+
+        let route = svc
+            .create_route(&ctx, make_create_route(u.id))
+            .await
+            .unwrap();
+
+        // Update tags only — same (path, priority, method) but it's the same route.
+        let mut update_req = make_update_from_route(&route);
+        update_req.tags = vec!["new-tag".into()];
+        let updated = svc.update_route(&ctx, route.id, update_req).await.unwrap();
+        assert_eq!(updated.tags, vec!["new-tag".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn update_route_enabling_into_overlap_returns_conflict() {
+        let svc = make_service();
+        let tenant = Uuid::new_v4();
+        let ctx = test_ctx(tenant);
+
+        let u = svc
+            .create_upstream(&ctx, make_create_upstream_ip("openai"))
+            .await
+            .unwrap();
+
+        // Route A: enabled.
+        svc.create_route(&ctx, make_create_route(u.id))
+            .await
+            .unwrap();
+
+        // Route B: disabled duplicate.
+        let mut req_b = make_create_route(u.id);
+        req_b.enabled = false;
+        let route_b = svc.create_route(&ctx, req_b).await.unwrap();
+
+        // Enable route B → conflict with route A.
+        let mut update_req = make_update_from_route(&route_b);
+        update_req.enabled = true;
+        let err = svc
+            .update_route(&ctx, route_b.id, update_req)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DomainError::Conflict { .. }),
+            "expected Conflict, got: {err:?}"
+        );
     }
 }

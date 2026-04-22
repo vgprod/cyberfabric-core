@@ -21,13 +21,13 @@ This directory contains JSON Schema definitions (Draft 7) for the Chat Engine AP
 All schemas use GTS (Generic Type System) identifiers with the prefix:
 
 ```
-gts.x.chat_engine.<category>.<type_name>.v1~
+gtx.cf.chat_engine.<category>.<type_name>.v1~
 ```
 
 Examples:
-- `gts.x.chat_engine.common.session.v1~`
-- `gts.x.chat_engine.session.create_request.v1~`
-- `gts.x.chat_engine.webhook.message_new_event.v1~`
+- `gtx.cf.chat_engine.common.session.v1~`
+- `gtx.cf.chat_engine.session.create_request.v1~`
+- `gtx.cf.chat_engine.webhook.message_new_event.v1~`
 
 ## Usage
 

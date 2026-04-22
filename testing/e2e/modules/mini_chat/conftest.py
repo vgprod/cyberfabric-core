@@ -21,13 +21,15 @@ from .mock_provider.server import MockProviderServer, DummyMockProvider
 BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:8087")
 API_PREFIX = f"{BASE_URL}/cf/mini-chat/v1"
 
-DEFAULT_MODEL = "gpt-5.2"
-STANDARD_MODEL = "gpt-5-mini"
-AZURE_MODEL = "azure-gpt-4.1-mini"
+# NOTE: model_id is unique across providers in this test catalog by convention,
+# not by system design. The production model policy plugin could map the same
+# model_id to different providers. Tests rely on this uniqueness for simplicity.
+DEFAULT_MODEL = "azure-gpt-4.1"       # Premium tier, Azure (production target)
+STANDARD_MODEL = "gpt-5.2"            # Standard tier, OpenAI
 
 PROVIDER_DEFAULT_MODEL = {
-    "openai": DEFAULT_MODEL,
-    "azure": AZURE_MODEL,
+    "azure": DEFAULT_MODEL,
+    "openai": STANDARD_MODEL,
 }
 
 _TEMP_HOME = tempfile.mkdtemp(prefix="hyperspot-test-")
@@ -113,6 +115,22 @@ def _log_request(method: str, url: str, body=None, status: int = 0, response_tex
         log.info(f"<<< {response_text[:500]}")
 
 
+def poll_until(call, *, until, timeout: int = 60):
+    """Generic polling helper. call() returns an httpx.Response, until(resp) returns bool."""
+    import time
+    deadline = time.monotonic() + timeout
+    resp = None
+    while time.monotonic() < deadline:
+        resp = call()
+        assert resp.status_code == 200, f"Poll failed: {resp.status_code} {resp.text}"
+        if until(resp):
+            return resp
+        time.sleep(1)
+    raise TimeoutError(
+        f"Polling timed out after {timeout}s. Last response: {resp.text[:200] if resp else 'none'}"
+    )
+
+
 def stream_message(chat_id: str, content: str, **kwargs) -> tuple[int, list[SSEEvent], str]:
     """Send a streaming message and return (status_code, events, raw_body)."""
     body = {"content": content, **kwargs}
@@ -140,11 +158,9 @@ def _patch_mini_chat_config(config_text: str, env) -> str:
     # home_dir
     config_text = re.sub(r"(home_dir\s*:\s*).*", rf'\1"{_TEMP_HOME}"', config_text, count=1)
 
-    # Log level
+    # Log level — mini_chat logging is already in base.yaml; only inject oagw
     mini_chat_log = os.environ.get("MINI_CHAT_LOG", "debug")
     log_inject = (
-        f"  mini_chat:\n"
-        f"    console_level: {mini_chat_log}\n"
         f"  oagw:\n"
         f"    console_level: {mini_chat_log}\n"
     )
@@ -421,7 +437,7 @@ def module_test_env(request):
         health_timeout=90,
         env={"RUST_LOG": rust_log},
         sidecars=[mock],
-        log_file=Path("/tmp/hyperspot-mini-chat.log"),
+        log_suffix="mini-chat",
     )
 
 
@@ -446,7 +462,7 @@ def mock_provider(test_env):
 
 @pytest.fixture
 def chat(server) -> dict:
-    """Create a fresh chat with the default model (openai)."""
+    """Create a fresh chat with the default model (azure-gpt-4.1)."""
     resp = httpx.post(f"{API_PREFIX}/chats", json={})
     assert resp.status_code == 201, f"Failed to create chat: {resp.status_code} {resp.text}"
     return resp.json()

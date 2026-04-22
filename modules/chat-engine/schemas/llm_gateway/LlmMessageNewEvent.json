@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "gts://gts.x.chat_engine.llm_gateway.message_new_event.v1",
+  "$id": "gts://gtx.cf.chat_engine.llm_gateway.message_new_event.v1~",
   "title": "LlmMessageNewEvent",
   "description": "Input for the LLM gateway plugin on_message / on_message_recreate calls. Chat Engine assembles an ordered messages list from the session's active path (filtered by visibility flags) and passes it to the plugin. After summarization, the list starts with the summary message followed by recent messages.",
   "type": "object",

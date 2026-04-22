@@ -207,6 +207,34 @@ struct RateLimitConfig {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
+enum CorsHttpMethod {
+    Get,
+    Post,
+    Put,
+    Delete,
+    Patch,
+    Head,
+    Options,
+}
+
+#[derive(Deserialize)]
+struct CorsConfig {
+    #[serde(default)]
+    sharing: SharingMode,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    allowed_origins: Vec<String>,
+    #[serde(default)]
+    allowed_methods: Vec<CorsHttpMethod>,
+    #[serde(default)]
+    expose_headers: Vec<String>,
+    #[serde(default)]
+    allow_credentials: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 enum HttpMethod {
     Get,
     Post,
@@ -264,6 +292,8 @@ struct UpstreamPayload {
     #[serde(default)]
     rate_limit: Option<RateLimitConfig>,
     #[serde(default)]
+    cors: Option<CorsConfig>,
+    #[serde(default)]
     tags: Vec<String>,
     #[serde(default = "default_true")]
     enabled: bool,
@@ -280,6 +310,8 @@ struct RoutePayload {
     plugins: Option<PluginsConfig>,
     #[serde(default)]
     rate_limit: Option<RateLimitConfig>,
+    #[serde(default)]
+    cors: Option<CorsConfig>,
     #[serde(default)]
     tags: Vec<String>,
     #[serde(default)]
@@ -474,6 +506,33 @@ impl From<PluginsConfig> for domain::PluginsConfig {
     }
 }
 
+impl From<CorsHttpMethod> for domain::CorsHttpMethod {
+    fn from(v: CorsHttpMethod) -> Self {
+        match v {
+            CorsHttpMethod::Get => Self::Get,
+            CorsHttpMethod::Post => Self::Post,
+            CorsHttpMethod::Put => Self::Put,
+            CorsHttpMethod::Delete => Self::Delete,
+            CorsHttpMethod::Patch => Self::Patch,
+            CorsHttpMethod::Head => Self::Head,
+            CorsHttpMethod::Options => Self::Options,
+        }
+    }
+}
+
+impl From<CorsConfig> for domain::CorsConfig {
+    fn from(v: CorsConfig) -> Self {
+        Self {
+            sharing: v.sharing.into(),
+            enabled: v.enabled,
+            allowed_origins: v.allowed_origins,
+            allowed_methods: v.allowed_methods.into_iter().map(Into::into).collect(),
+            expose_headers: v.expose_headers,
+            allow_credentials: v.allow_credentials,
+        }
+    }
+}
+
 impl From<HttpMethod> for domain::HttpMethod {
     fn from(v: HttpMethod) -> Self {
         match v {
@@ -536,6 +595,7 @@ impl UpstreamPayload {
                 headers: self.headers.map(Into::into),
                 plugins: self.plugins.map(Into::into),
                 rate_limit: self.rate_limit.map(Into::into),
+                cors: self.cors.map(Into::into),
                 tags: self.tags,
                 enabled: self.enabled,
             },
@@ -553,6 +613,7 @@ impl From<RoutePayload> for ProvisionedRoute {
                 match_rules: p.match_rules.into(),
                 plugins: p.plugins.map(Into::into),
                 rate_limit: p.rate_limit.map(Into::into),
+                cors: p.cors.map(Into::into),
                 tags: p.tags,
                 priority: p.priority,
                 enabled: p.enabled,

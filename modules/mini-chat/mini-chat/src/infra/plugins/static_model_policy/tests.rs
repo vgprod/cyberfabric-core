@@ -2,12 +2,11 @@ use mini_chat_sdk::{
     EstimationBudgets, MiniChatModelPolicyPluginClientV1, MiniChatModelPolicyPluginError,
     ModelCatalogEntry, ModelGeneralConfig, ModelPreference, ModelTier,
     models::{
-        ModelApiParams, ModelFeatures, ModelInputType, ModelPerformance, ModelSupportedEndpoints,
-        ModelTokenPolicy, ModelToolSupport,
+        ModelApiParams, ModelFeatures, ModelSupportedEndpoints, ModelToolSupport,
+        WebSearchContextSize,
     },
 };
 use time::OffsetDateTime;
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::config::StaticMiniChatPolicyPluginConfig;
@@ -15,11 +14,10 @@ use super::service::Service;
 
 fn make_entry(model_id: &str, tier: ModelTier) -> ModelCatalogEntry {
     ModelCatalogEntry {
-        model_id: model_id.to_owned(),
+        id: model_id.to_owned(),
         provider_model_id: format!("{model_id}-v1"),
         display_name: model_id.to_owned(),
         description: String::new(),
-        version: String::new(),
         provider_id: "default".to_owned(),
         provider_display_name: "Default".to_owned(),
         icon: String::new(),
@@ -33,7 +31,8 @@ fn make_entry(model_id: &str, tier: ModelTier) -> ModelCatalogEntry {
         output_tokens_credit_multiplier_micro: 3_000_000,
         multiplier_display: "1x".to_owned(),
         estimation_budgets: EstimationBudgets::default(),
-        max_retrieved_chunks_per_turn: 5,
+        max_num_results: 5,
+        web_search_context_size: WebSearchContextSize::Low,
         max_tool_calls: 2,
         general_config: ModelGeneralConfig {
             config_type: String::new(),
@@ -45,54 +44,28 @@ fn make_entry(model_id: &str, tier: ModelTier) -> ModelCatalogEntry {
                 frequency_penalty: 0.0,
                 presence_penalty: 0.0,
                 stop: vec![],
+                extra_body: None,
+                reasoning_effort: None,
             },
             features: ModelFeatures {
                 streaming: true,
-                function_calling: true,
                 structured_output: true,
-                fine_tuning: false,
-                distillation: false,
-                fim_completion: false,
-                chat_prefix_completion: false,
-            },
-            input_type: ModelInputType {
-                text: true,
-                image: false,
-                audio: false,
-                video: false,
             },
             tool_support: ModelToolSupport {
                 web_search: false,
                 file_search: false,
                 image_generation: false,
                 code_interpreter: false,
-                computer_use: false,
                 mcp: false,
             },
             supported_endpoints: ModelSupportedEndpoints {
                 chat_completions: true,
                 responses: false,
-                realtime: false,
-                assistants: false,
-                batch_api: false,
-                fine_tuning: false,
                 embeddings: false,
-                videos: false,
                 image_generation: false,
-                image_edit: false,
                 audio_speech_generation: false,
                 audio_transcription: false,
                 audio_translation: false,
-                moderations: false,
-                completions: false,
-            },
-            token_policy: ModelTokenPolicy {
-                input_tokens_credit_multiplier: 1.0,
-                output_tokens_credit_multiplier: 3.0,
-            },
-            performance: ModelPerformance {
-                response_latency_ms: 500,
-                speed_tokens_per_second: 100,
             },
         },
         preference: Some(ModelPreference {
@@ -117,20 +90,13 @@ fn test_service() -> Service {
     )
 }
 
-fn token() -> CancellationToken {
-    CancellationToken::new()
-}
-
 // ── get_current_policy_version ──
 
 #[tokio::test]
 async fn policy_version_echoes_user_id() {
     let svc = test_service();
     let user_id = Uuid::new_v4();
-    let info = svc
-        .get_current_policy_version(user_id, token())
-        .await
-        .unwrap();
+    let info = svc.get_current_policy_version(user_id).await.unwrap();
 
     assert_eq!(info.user_id, user_id);
     assert_eq!(info.policy_version, 1);
@@ -141,7 +107,7 @@ async fn policy_version_timestamp_is_recent() {
     let before = OffsetDateTime::now_utc();
     let svc = test_service();
     let info = svc
-        .get_current_policy_version(Uuid::new_v4(), token())
+        .get_current_policy_version(Uuid::new_v4())
         .await
         .unwrap();
     let after = OffsetDateTime::now_utc();
@@ -156,7 +122,7 @@ async fn policy_version_timestamp_is_recent() {
 async fn snapshot_version_1_returns_catalog() {
     let svc = test_service();
     let user_id = Uuid::new_v4();
-    let snap = svc.get_policy_snapshot(user_id, 1, token()).await.unwrap();
+    let snap = svc.get_policy_snapshot(user_id, 1).await.unwrap();
 
     assert_eq!(snap.user_id, user_id);
     assert_eq!(snap.policy_version, 1);
@@ -167,9 +133,7 @@ async fn snapshot_version_1_returns_catalog() {
 async fn snapshot_wrong_version_returns_not_found() {
     let svc = test_service();
     for version in [0, 2, 100, u64::MAX] {
-        let result = svc
-            .get_policy_snapshot(Uuid::new_v4(), version, token())
-            .await;
+        let result = svc.get_policy_snapshot(Uuid::new_v4(), version).await;
         assert!(
             matches!(result, Err(MiniChatModelPolicyPluginError::NotFound)),
             "version {version} should return NotFound"
@@ -189,10 +153,7 @@ async fn snapshot_preserves_kill_switch_state() {
         cfg.default_standard_limits,
         cfg.default_premium_limits,
     );
-    let snap = svc
-        .get_policy_snapshot(Uuid::new_v4(), 1, token())
-        .await
-        .unwrap();
+    let snap = svc.get_policy_snapshot(Uuid::new_v4(), 1).await.unwrap();
 
     assert!(snap.kill_switches.disable_premium_tier);
     assert!(snap.kill_switches.disable_web_search);
@@ -202,10 +163,7 @@ async fn snapshot_preserves_kill_switch_state() {
 #[tokio::test]
 async fn snapshot_contains_both_tiers() {
     let svc = test_service();
-    let snap = svc
-        .get_policy_snapshot(Uuid::new_v4(), 1, token())
-        .await
-        .unwrap();
+    let snap = svc.get_policy_snapshot(Uuid::new_v4(), 1).await.unwrap();
 
     let has_premium = snap
         .model_catalog
@@ -225,10 +183,7 @@ async fn snapshot_contains_both_tiers() {
 #[tokio::test]
 async fn check_user_license_returns_active() {
     let svc = test_service();
-    let status = svc
-        .check_user_license(Uuid::new_v4(), token())
-        .await
-        .unwrap();
+    let status = svc.check_user_license(Uuid::new_v4()).await.unwrap();
 
     assert!(status.active, "static plugin should always return active");
 }
@@ -239,7 +194,7 @@ async fn check_user_license_returns_active() {
 async fn user_limits_version_1_returns_configured_limits() {
     let svc = test_service();
     let user_id = Uuid::new_v4();
-    let limits = svc.get_user_limits(user_id, 1, token()).await.unwrap();
+    let limits = svc.get_user_limits(user_id, 1).await.unwrap();
 
     assert_eq!(limits.user_id, user_id);
     assert_eq!(limits.policy_version, 1);
@@ -253,7 +208,7 @@ async fn user_limits_version_1_returns_configured_limits() {
 async fn user_limits_wrong_version_returns_not_found() {
     let svc = test_service();
     for version in [0, 2, 100, u64::MAX] {
-        let result = svc.get_user_limits(Uuid::new_v4(), version, token()).await;
+        let result = svc.get_user_limits(Uuid::new_v4(), version).await;
         assert!(
             matches!(result, Err(MiniChatModelPolicyPluginError::NotFound)),
             "version {version} should return NotFound"
@@ -273,10 +228,7 @@ async fn user_limits_reflect_custom_config() {
         cfg.default_standard_limits,
         cfg.default_premium_limits,
     );
-    let limits = svc
-        .get_user_limits(Uuid::new_v4(), 1, token())
-        .await
-        .unwrap();
+    let limits = svc.get_user_limits(Uuid::new_v4(), 1).await.unwrap();
 
     assert_eq!(limits.standard.limit_daily_credits_micro, 42);
     assert_eq!(limits.premium.limit_monthly_credits_micro, 99);

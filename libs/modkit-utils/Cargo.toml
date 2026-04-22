@@ -1,6 +1,6 @@
 [package]
 name = "cf-modkit-utils"
-version.workspace = true
+version = "0.6.2"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -18,7 +18,8 @@ name = "modkit_utils"
 workspace = true
 
 [features]
-humantime-serde = ["dep:humantime", "dep:serde"]
+serde = ["dep:serde"]
+humantime-serde = ["serde", "dep:humantime"]
 
 [dependencies]
 serde = { workspace = true, optional = true }

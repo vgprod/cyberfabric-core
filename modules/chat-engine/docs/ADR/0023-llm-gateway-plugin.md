@@ -1,5 +1,6 @@
-Created:  2026-03-06 by Constructor Tech
-Updated:  2026-03-09 by Constructor Tech
+<!-- Created: 2026-03-06 by Constructor Tech -->
+<!-- Updated: 2026-04-07 by Constructor Tech -->
+
 ---
 status: accepted
 date: 2026-03-06
@@ -23,13 +24,13 @@ date: 2026-03-06
   - [Option 2: Hardcoded capabilities + GTS derived schemas](#option-2-hardcoded-capabilities--gts-derived-schemas)
   - [Option 3: All config in SessionType.metadata](#option-3-all-config-in-sessiontypemetadata)
 - [Capability Resolution via Model Registry](#capability-resolution-via-model-registry)
-  - [Capability Refresh on Model Change (`on_session_updated`)](#capability-refresh-on-model-change-onsessionupdated)
+  - [Capability Refresh on Model Change (`on_session_updated`)](#capability-refresh-on-model-change-on_session_updated)
 - [Plugin Input: Messages List](#plugin-input-messages-list)
 - [Schema Extensions](#schema-extensions)
   - [Plugin Config & Metadata Schemas](#plugin-config--metadata-schemas)
   - [Entity Schemas](#entity-schemas)
 - [Context Overflow and Summarization](#context-overflow-and-summarization)
-  - [Trigger: context_overflow Error](#trigger-contextoverflow-error)
+  - [Trigger: context_overflow Error](#trigger-context_overflow-error)
   - [Summarization Flow](#summarization-flow)
   - [Message Visibility After Summarization](#message-visibility-after-summarization)
   - [Re-summarization](#re-summarization)
@@ -101,7 +102,7 @@ Chosen option: "Model Registry + GTS derived schemas", because it keeps capabili
 * Good, because capabilities are resolved at session creation time — each session gets a fresh model list and model-specific capabilities from Model Registry
 * Good, because `LlmUsage` provides typed token counts (prompt/completion/cached) without breaking the abstract base `Usage` schema
 * Good, because Chat Engine validates LLM metadata blobs against registered GTS schemas (FR-021)
-* Good, because plugin schema namespace is isolated (`gts.x.chat_engine.llm_gateway.*`) — no conflicts with other plugins
+* Good, because plugin schema namespace is isolated (`gtx.cf.chat_engine.llm_gateway.*`) — no conflicts with other plugins
 * Good, because base schemas remain unchanged — non-LLM plugins are unaffected
 * Bad, because plugin depends on Model Registry availability during `on_session_created` — session creation fails if Model Registry is down
 * Bad, because plugin must register GTS schemas at startup before any session type can be created
@@ -236,10 +237,10 @@ The plugin is responsible for deciding which messages to summarize and which to 
 
 | Schema | GTS ID | Extension Point |
 |--------|--------|-----------------|
-| `LlmPluginConfig` | `gts://gts.x.chat_engine.llm_gateway.plugin_config.v1` | `PluginConfig.config` |
-| `LlmSummarizationSettings` | `gts://gts.x.chat_engine.llm_gateway.summarization_settings.v1` | nested in `LlmPluginConfig.summarization_settings` |
-| `LlmMessageMetadata` | `gts://gts.x.chat_engine.llm_gateway.message_metadata.v1` | `Message.metadata` |
-| `LlmUsage` | `gts://gts.x.chat_engine.llm_gateway.usage.v1` | nested in `LlmMessageMetadata.usage` |
+| `LlmPluginConfig` | `gtx.cf.chat_engine.llm_gateway_plugin_config.v1~` | `PluginConfig.config` |
+| `LlmSummarizationSettings` | `gtx.cf.chat_engine.llm_gateway.summarization_settings.v1~` | nested in `LlmPluginConfig.summarization_settings` |
+| `LlmMessageMetadata` | `gtx.cf.chat_engine.llm_gateway.message_metadata.v1~` | `Message.metadata` |
+| `LlmUsage` | `gtx.cf.chat_engine.llm_gateway.usage.v1~` | nested in `LlmMessageMetadata.usage` |
 
 **`LlmPluginConfig` fields**: `summarization_settings?: LlmSummarizationSettings | null` — context overflow summarization config; null disables summarization
 
@@ -255,13 +256,13 @@ GTS entity schemas registered by LLM gateway plugin (extend base Chat Engine sch
 
 | Schema | GTS ID | Extends |
 |--------|--------|---------|
-| `LlmMessage` | `gts://gts.x.chat_engine.llm_gateway.message.v1` | `common/Message` |
-| `LlmMessageGetResponse` | `gts://gts.x.chat_engine.llm_gateway.message_get_response.v1` | `message/MessageGetResponse` |
-| `LlmMessageNewResponse` | `gts://gts.x.chat_engine.llm_gateway.message_new_response.v1` | `webhook/MessageNewResponse` |
-| `LlmMessageRecreateResponse` | `gts://gts.x.chat_engine.llm_gateway.message_recreate_response.v1` | `webhook/MessageRecreateResponse` |
-| `LlmStreamingCompleteEvent` | `gts://gts.x.chat_engine.llm_gateway.streaming_complete_event.v1` | `streaming/StreamingCompleteEvent` |
-| `LlmMessageNewEvent` | `gts://gts.x.chat_engine.llm_gateway.message_new_event.v1` | Plugin input for `on_message` / `on_message_recreate` |
-| `LlmSessionSummaryEvent` | `gts://gts.x.chat_engine.llm_gateway.session_summary_event.v1` | Plugin input for `on_session_summary` |
+| `LlmMessage` | `gtx.cf.chat_engine.llm_gateway.message.v1~` | `common/Message` |
+| `LlmMessageGetResponse` | `gtx.cf.chat_engine.llm_gateway.message_get_response.v1~` | `message/MessageGetResponse` |
+| `LlmMessageNewResponse` | `gtx.cf.chat_engine.llm_gateway.message_new_response.v1~` | `webhook/MessageNewResponse` |
+| `LlmMessageRecreateResponse` | `gtx.cf.chat_engine.llm_gateway.message_recreate_response.v1~` | `webhook/MessageRecreateResponse` |
+| `LlmStreamingCompleteEvent` | `gtx.cf.chat_engine.llm_gateway.streaming_complete_event.v1~` | `streaming/StreamingCompleteEvent` |
+| `LlmMessageNewEvent` | `gtx.cf.chat_engine.llm_gateway.message_new_event.v1~` | Plugin input for `on_message` / `on_message_recreate` |
+| `LlmSessionSummaryEvent` | `gtx.cf.chat_engine.llm_gateway.session_summary_event.v1~` | Plugin input for `on_session_summary` |
 
 ## Context Overflow and Summarization
 

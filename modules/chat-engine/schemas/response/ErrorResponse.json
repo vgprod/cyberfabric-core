@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "gts://gts.x.chat_engine.response.error.v1",
+  "$id": "gts://gtx.cf.chat_engine.response.error.v1~",
   "title": "ErrorResponse",
   "description": "RFC 9457 Problem Details error response",
   "type": "object",

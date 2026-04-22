@@ -209,6 +209,33 @@ pub struct PluginsConfig {
 }
 
 // ---------------------------------------------------------------------------
+// CorsConfig
+// ---------------------------------------------------------------------------
+
+/// HTTP methods supported by CORS configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CorsHttpMethod {
+    Get,
+    Post,
+    Put,
+    Delete,
+    Patch,
+    Head,
+    Options,
+}
+
+/// Cross-Origin Resource Sharing (CORS) configuration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CorsConfig {
+    pub sharing: SharingMode,
+    pub enabled: bool,
+    pub allowed_origins: Vec<String>,
+    pub allowed_methods: Vec<CorsHttpMethod>,
+    pub expose_headers: Vec<String>,
+    pub allow_credentials: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Route matching
 // ---------------------------------------------------------------------------
 
@@ -269,6 +296,7 @@ pub struct Route {
     pub match_rules: MatchRules,
     pub plugins: Option<PluginsConfig>,
     pub rate_limit: Option<RateLimitConfig>,
+    pub cors: Option<CorsConfig>,
     pub tags: Vec<String>,
     pub priority: i32,
     pub enabled: bool,
@@ -288,6 +316,7 @@ pub struct Upstream {
     pub headers: Option<HeadersConfig>,
     pub plugins: Option<PluginsConfig>,
     pub rate_limit: Option<RateLimitConfig>,
+    pub cors: Option<CorsConfig>,
     pub tags: Vec<String>,
 }
 
@@ -324,6 +353,7 @@ pub struct CreateUpstreamRequest {
     headers: Option<HeadersConfig>,
     plugins: Option<PluginsConfig>,
     rate_limit: Option<RateLimitConfig>,
+    cors: Option<CorsConfig>,
     tags: Vec<String>,
     enabled: bool,
 }
@@ -339,6 +369,7 @@ impl CreateUpstreamRequest {
             headers: None,
             plugins: None,
             rate_limit: None,
+            cors: None,
             tags: vec![],
             enabled: true,
         }
@@ -365,6 +396,9 @@ impl CreateUpstreamRequest {
     pub fn rate_limit(&self) -> Option<&RateLimitConfig> {
         self.rate_limit.as_ref()
     }
+    pub fn cors(&self) -> Option<&CorsConfig> {
+        self.cors.as_ref()
+    }
     pub fn tags(&self) -> &[String] {
         &self.tags
     }
@@ -381,6 +415,7 @@ pub struct CreateUpstreamRequestBuilder {
     headers: Option<HeadersConfig>,
     plugins: Option<PluginsConfig>,
     rate_limit: Option<RateLimitConfig>,
+    cors: Option<CorsConfig>,
     tags: Vec<String>,
     enabled: bool,
 }
@@ -406,6 +441,10 @@ impl CreateUpstreamRequestBuilder {
         self.rate_limit = Some(rate_limit);
         self
     }
+    pub fn cors(mut self, cors: CorsConfig) -> Self {
+        self.cors = Some(cors);
+        self
+    }
     pub fn tags(mut self, tags: Vec<String>) -> Self {
         self.tags = tags;
         self
@@ -423,38 +462,51 @@ impl CreateUpstreamRequestBuilder {
             headers: self.headers,
             plugins: self.plugins,
             rate_limit: self.rate_limit,
+            cors: self.cors,
             tags: self.tags,
             enabled: self.enabled,
         }
     }
 }
 
-/// Request for updating an upstream (patch semantics). Construct via
+/// Request for replacing an upstream (PUT semantics). Construct via
 /// [`UpdateUpstreamRequest::builder`].
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UpdateUpstreamRequest {
-    server: Option<Server>,
-    protocol: Option<String>,
+    server: Server,
+    protocol: String,
     alias: Option<String>,
     auth: Option<AuthConfig>,
     headers: Option<HeadersConfig>,
     plugins: Option<PluginsConfig>,
     rate_limit: Option<RateLimitConfig>,
-    tags: Option<Vec<String>>,
-    enabled: Option<bool>,
+    cors: Option<CorsConfig>,
+    tags: Vec<String>,
+    enabled: bool,
 }
 
 impl UpdateUpstreamRequest {
-    /// Start building an update request. All fields default to `None` (no change).
-    pub fn builder() -> UpdateUpstreamRequestBuilder {
-        UpdateUpstreamRequestBuilder::default()
+    /// Start building an update request. `server` and `protocol` are required.
+    pub fn builder(server: Server, protocol: impl Into<String>) -> UpdateUpstreamRequestBuilder {
+        UpdateUpstreamRequestBuilder {
+            server,
+            protocol: protocol.into(),
+            alias: None,
+            auth: None,
+            headers: None,
+            plugins: None,
+            rate_limit: None,
+            cors: None,
+            tags: vec![],
+            enabled: true,
+        }
     }
 
-    pub fn server(&self) -> Option<&Server> {
-        self.server.as_ref()
+    pub fn server(&self) -> &Server {
+        &self.server
     }
-    pub fn protocol(&self) -> Option<&str> {
-        self.protocol.as_deref()
+    pub fn protocol(&self) -> &str {
+        &self.protocol
     }
     pub fn alias(&self) -> Option<&str> {
         self.alias.as_deref()
@@ -471,36 +523,31 @@ impl UpdateUpstreamRequest {
     pub fn rate_limit(&self) -> Option<&RateLimitConfig> {
         self.rate_limit.as_ref()
     }
-    pub fn tags(&self) -> Option<&[String]> {
-        self.tags.as_deref()
+    pub fn cors(&self) -> Option<&CorsConfig> {
+        self.cors.as_ref()
     }
-    pub fn enabled(&self) -> Option<bool> {
+    pub fn tags(&self) -> &[String] {
+        &self.tags
+    }
+    pub fn enabled(&self) -> bool {
         self.enabled
     }
 }
 
-#[derive(Default)]
 pub struct UpdateUpstreamRequestBuilder {
-    server: Option<Server>,
-    protocol: Option<String>,
+    server: Server,
+    protocol: String,
     alias: Option<String>,
     auth: Option<AuthConfig>,
     headers: Option<HeadersConfig>,
     plugins: Option<PluginsConfig>,
     rate_limit: Option<RateLimitConfig>,
-    tags: Option<Vec<String>>,
-    enabled: Option<bool>,
+    cors: Option<CorsConfig>,
+    tags: Vec<String>,
+    enabled: bool,
 }
 
 impl UpdateUpstreamRequestBuilder {
-    pub fn server(mut self, server: Server) -> Self {
-        self.server = Some(server);
-        self
-    }
-    pub fn protocol(mut self, protocol: impl Into<String>) -> Self {
-        self.protocol = Some(protocol.into());
-        self
-    }
     pub fn alias(mut self, alias: impl Into<String>) -> Self {
         self.alias = Some(alias.into());
         self
@@ -521,12 +568,16 @@ impl UpdateUpstreamRequestBuilder {
         self.rate_limit = Some(rate_limit);
         self
     }
+    pub fn cors(mut self, cors: CorsConfig) -> Self {
+        self.cors = Some(cors);
+        self
+    }
     pub fn tags(mut self, tags: Vec<String>) -> Self {
-        self.tags = Some(tags);
+        self.tags = tags;
         self
     }
     pub fn enabled(mut self, enabled: bool) -> Self {
-        self.enabled = Some(enabled);
+        self.enabled = enabled;
         self
     }
     pub fn build(self) -> UpdateUpstreamRequest {
@@ -538,6 +589,7 @@ impl UpdateUpstreamRequestBuilder {
             headers: self.headers,
             plugins: self.plugins,
             rate_limit: self.rate_limit,
+            cors: self.cors,
             tags: self.tags,
             enabled: self.enabled,
         }
@@ -555,6 +607,7 @@ pub struct CreateRouteRequest {
     match_rules: MatchRules,
     plugins: Option<PluginsConfig>,
     rate_limit: Option<RateLimitConfig>,
+    cors: Option<CorsConfig>,
     tags: Vec<String>,
     priority: i32,
     enabled: bool,
@@ -568,6 +621,7 @@ impl CreateRouteRequest {
             match_rules,
             plugins: None,
             rate_limit: None,
+            cors: None,
             tags: vec![],
             priority: 0,
             enabled: true,
@@ -586,6 +640,9 @@ impl CreateRouteRequest {
     pub fn rate_limit(&self) -> Option<&RateLimitConfig> {
         self.rate_limit.as_ref()
     }
+    pub fn cors(&self) -> Option<&CorsConfig> {
+        self.cors.as_ref()
+    }
     pub fn tags(&self) -> &[String] {
         &self.tags
     }
@@ -602,6 +659,7 @@ pub struct CreateRouteRequestBuilder {
     match_rules: MatchRules,
     plugins: Option<PluginsConfig>,
     rate_limit: Option<RateLimitConfig>,
+    cors: Option<CorsConfig>,
     tags: Vec<String>,
     priority: i32,
     enabled: bool,
@@ -614,6 +672,10 @@ impl CreateRouteRequestBuilder {
     }
     pub fn rate_limit(mut self, rate_limit: RateLimitConfig) -> Self {
         self.rate_limit = Some(rate_limit);
+        self
+    }
+    pub fn cors(mut self, cors: CorsConfig) -> Self {
+        self.cors = Some(cors);
         self
     }
     pub fn tags(mut self, tags: Vec<String>) -> Self {
@@ -634,6 +696,7 @@ impl CreateRouteRequestBuilder {
             match_rules: self.match_rules,
             plugins: self.plugins,
             rate_limit: self.rate_limit,
+            cors: self.cors,
             tags: self.tags,
             priority: self.priority,
             enabled: self.enabled,
@@ -641,26 +704,35 @@ impl CreateRouteRequestBuilder {
     }
 }
 
-/// Request for updating a route (patch semantics). Construct via
+/// Request for replacing a route (PUT semantics). Construct via
 /// [`UpdateRouteRequest::builder`].
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UpdateRouteRequest {
-    match_rules: Option<MatchRules>,
+    match_rules: MatchRules,
     plugins: Option<PluginsConfig>,
     rate_limit: Option<RateLimitConfig>,
-    tags: Option<Vec<String>>,
-    priority: Option<i32>,
-    enabled: Option<bool>,
+    cors: Option<CorsConfig>,
+    tags: Vec<String>,
+    priority: i32,
+    enabled: bool,
 }
 
 impl UpdateRouteRequest {
-    /// Start building an update request. All fields default to `None` (no change).
-    pub fn builder() -> UpdateRouteRequestBuilder {
-        UpdateRouteRequestBuilder::default()
+    /// Start building an update request. `match_rules` is required.
+    pub fn builder(match_rules: MatchRules) -> UpdateRouteRequestBuilder {
+        UpdateRouteRequestBuilder {
+            match_rules,
+            plugins: None,
+            rate_limit: None,
+            cors: None,
+            tags: vec![],
+            priority: 0,
+            enabled: true,
+        }
     }
 
-    pub fn match_rules(&self) -> Option<&MatchRules> {
-        self.match_rules.as_ref()
+    pub fn match_rules(&self) -> &MatchRules {
+        &self.match_rules
     }
     pub fn plugins(&self) -> Option<&PluginsConfig> {
         self.plugins.as_ref()
@@ -668,32 +740,31 @@ impl UpdateRouteRequest {
     pub fn rate_limit(&self) -> Option<&RateLimitConfig> {
         self.rate_limit.as_ref()
     }
-    pub fn tags(&self) -> Option<&[String]> {
-        self.tags.as_deref()
+    pub fn cors(&self) -> Option<&CorsConfig> {
+        self.cors.as_ref()
     }
-    pub fn priority(&self) -> Option<i32> {
+    pub fn tags(&self) -> &[String] {
+        &self.tags
+    }
+    pub fn priority(&self) -> i32 {
         self.priority
     }
-    pub fn enabled(&self) -> Option<bool> {
+    pub fn enabled(&self) -> bool {
         self.enabled
     }
 }
 
-#[derive(Default)]
 pub struct UpdateRouteRequestBuilder {
-    match_rules: Option<MatchRules>,
+    match_rules: MatchRules,
     plugins: Option<PluginsConfig>,
     rate_limit: Option<RateLimitConfig>,
-    tags: Option<Vec<String>>,
-    priority: Option<i32>,
-    enabled: Option<bool>,
+    cors: Option<CorsConfig>,
+    tags: Vec<String>,
+    priority: i32,
+    enabled: bool,
 }
 
 impl UpdateRouteRequestBuilder {
-    pub fn match_rules(mut self, match_rules: MatchRules) -> Self {
-        self.match_rules = Some(match_rules);
-        self
-    }
     pub fn plugins(mut self, plugins: PluginsConfig) -> Self {
         self.plugins = Some(plugins);
         self
@@ -702,16 +773,20 @@ impl UpdateRouteRequestBuilder {
         self.rate_limit = Some(rate_limit);
         self
     }
+    pub fn cors(mut self, cors: CorsConfig) -> Self {
+        self.cors = Some(cors);
+        self
+    }
     pub fn tags(mut self, tags: Vec<String>) -> Self {
-        self.tags = Some(tags);
+        self.tags = tags;
         self
     }
     pub fn priority(mut self, priority: i32) -> Self {
-        self.priority = Some(priority);
+        self.priority = priority;
         self
     }
     pub fn enabled(mut self, enabled: bool) -> Self {
-        self.enabled = Some(enabled);
+        self.enabled = enabled;
         self
     }
     pub fn build(self) -> UpdateRouteRequest {
@@ -719,6 +794,7 @@ impl UpdateRouteRequestBuilder {
             match_rules: self.match_rules,
             plugins: self.plugins,
             rate_limit: self.rate_limit,
+            cors: self.cors,
             tags: self.tags,
             priority: self.priority,
             enabled: self.enabled,
@@ -797,6 +873,7 @@ mod tests {
             },
             plugins: None,
             rate_limit: None,
+            cors: None,
             tags: vec![],
             priority: 0,
             enabled: true,

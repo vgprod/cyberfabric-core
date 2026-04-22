@@ -1,5 +1,6 @@
-Created:  2026-02-04 by Constructor Tech
-Updated:  2026-03-06 by Constructor Tech
+<!-- Created: 2026-02-04 by Constructor Tech -->
+<!-- Updated: 2026-04-07 by Constructor Tech -->
+
 # ADR-0012: Variant Index for Sequential Navigation
 
 
@@ -12,7 +13,7 @@ Updated:  2026-03-06 by Constructor Tech
   - [Consequences](#consequences)
   - [Confirmation](#confirmation)
 - [Pros and Cons of the Options](#pros-and-cons-of-the-options)
-  - [Option 1: 0-based variant_index](#option-1-0-based-variantindex)
+  - [Option 1: 0-based variant_index](#option-1-0-based-variant_index)
   - [Option 2: UUID-based ordering](#option-2-uuid-based-ordering)
   - [Option 3: Timestamp-based ordering](#option-3-timestamp-based-ordering)
 - [Related Design Elements](#related-design-elements)
@@ -23,7 +24,11 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
+**Review**: Revisit if variant indexing query patterns change
+
 **ID**: `cpt-cf-chat-engine-adr-variant-indexing`
+
+> **Note**: This ADR extends ADR-0011 (Message Variants) with indexing-specific decisions. See ADR-0011 for the variant storage model.
 
 ## Context and Problem Statement
 
@@ -65,21 +70,39 @@ Chosen option: "0-based variant_index", because it provides intuitive sequential
 
 ### Confirmation
 
-Confirmed via design review and alignment with DESIGN.md implementation.
+Confirmed when variant navigation queries use variant_index arithmetic (current ± 1) and position display returns correct "N of M" values from index and COUNT(*).
 
 ## Pros and Cons of the Options
 
 ### Option 1: 0-based variant_index
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+* Good, because intuitive sequential numbering maps directly to UI display ("2 of 5")
+* Good, because next/previous navigation is a simple arithmetic query (variant_index ± 1)
+* Good, because stable ordering independent of creation time or instance clocks
+* Good, because efficient database indexing on INTEGER column
+* Bad, because new variant requires MAX(variant_index) + 1 query to determine next index
+* Bad, because deletion leaves gaps in the sequence (0, 1, 3 after deleting index 2)
+* Bad, because reordering variants requires updating multiple rows
 
 ### Option 2: UUID-based ordering
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+* Good, because globally unique identifiers with no collision risk across instances
+* Good, because no coordination needed to generate identifiers (no MAX query)
+* Good, because UUIDs can encode creation time if using UUIDv7, providing natural ordering
+* Bad, because lexicographic UUID sorting does not reflect meaningful variant order
+* Bad, because position display ("2 of 5") requires sorting all UUIDs and counting position
+* Bad, because next/previous navigation requires fetching and sorting all sibling UUIDs
+* Bad, because UUIDs are opaque to users and harder to debug than sequential integers
 
 ### Option 3: Timestamp-based ordering
 
-See "Considered Options" and "Consequences" above for trade-off analysis.
+* Good, because timestamps are assigned automatically without explicit index management
+* Good, because chronological order naturally reflects variant creation sequence
+* Good, because no coordination or MAX query needed (each insert uses current time)
+* Bad, because clock skew across stateless instances can produce inconsistent ordering
+* Bad, because sub-millisecond concurrent regenerations may produce identical timestamps
+* Bad, because position calculation requires ORDER BY + row numbering rather than direct index lookup
+* Bad, because ordering is fragile and may change if timestamps are corrected or adjusted
 
 ## Related Design Elements
 

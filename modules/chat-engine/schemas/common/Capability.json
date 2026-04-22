@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "gts://gts.x.chat_engine.common.capability.v1",
+  "$id": "gts://gtx.cf.chat_engine.common.capability.v1~",
   "title": "Capability",
   "description": "A typed feature that a backend plugin can provide. Used in `SessionType.available_capabilities` (advertised max set) and `Session.enabled_capabilities` (runtime-confirmed set).",
   "type": "object",

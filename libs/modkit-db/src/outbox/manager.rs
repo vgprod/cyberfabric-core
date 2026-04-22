@@ -94,7 +94,7 @@ pub(super) fn register_stats<P: Send + Sync + 'static>(
 ///     .profile(OutboxProfile::high_throughput())
 ///     .processor_tuning(WorkerTuning::processor_high_throughput().batch_size(50))
 ///     .queue("orders", Partitions::of(4))
-///         .decoupled(my_handler)
+///         .leased(my_handler)
 ///     .start().await?;
 /// // enqueue via handle.outbox()
 /// handle.stop().await;
@@ -124,7 +124,7 @@ impl OutboxBuilder {
             processors: None,
             maintenance_guaranteed: None,
             maintenance_shared: None,
-            stats_interval: Some(Duration::from_secs(60)),
+            stats_interval: Some(Duration::from_mins(1)),
             profile: None,
             processor_tuning: None,
             sequencer_tuning: None,
@@ -369,7 +369,7 @@ impl OutboxBuilder {
                         semaphore: ConcurrencyLimit::Fixed(Arc::clone(shared_sem)),
                         backoff: BackoffConfig {
                             initial: Duration::from_millis(500),
-                            max: Duration::from_secs(60),
+                            max: Duration::from_mins(1),
                             ..Default::default()
                         },
                     },

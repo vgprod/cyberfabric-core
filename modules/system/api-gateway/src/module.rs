@@ -226,10 +226,8 @@ impl ApiGateway {
         // becomes the **outermost** layer and therefore runs **first** on the request path.
         //
         // Desired request execution order (outermost -> innermost):
-        // SetRequestId -> PropagateRequestId -> Trace -> push_req_id
-        // -> HttpMetrics -> CatchPanic
-        // -> Timeout -> BodyLimit -> CORS -> MIME validation -> RateLimit -> ErrorMapping -> Auth -> License
-        // -> [Route matching] -> PropagateMatchedPath -> Handler
+        // SetRequestId -> PropagateRequestId -> Trace -> push_req_id_to_extensions
+        // -> Timeout -> BodyLimit -> CORS -> MIME validation -> RateLimit -> ErrorMapping -> Auth -> ScopeEnforcement -> License -> Router
         //
         // Therefore we must add layers in the reverse order (innermost -> outermost) below.
         // Due future refactoring, this order must be maintained.
@@ -249,7 +247,7 @@ impl ApiGateway {
             .map(|e| e.value().clone())
             .collect();
 
-        // 13) License validation
+        // 12) License validation
         let license_map = middleware::license_validation::LicenseRequirementMap::from_specs(&specs);
 
         router = router.layer(from_fn(
@@ -259,7 +257,28 @@ impl ApiGateway {
             },
         ));
 
-        // 12) Auth
+        // 11) Route Policy Enforcement (runs after auth, checks token_scopes against route requirements)
+        if config.route_policies.enabled {
+            // Reject invalid combination: route_policies requires authentication to work
+            if config.auth_disabled {
+                return Err(anyhow::anyhow!(
+                    "Invalid configuration: route_policies.enabled=true requires authentication. \
+                     Set auth_disabled=false or disable route_policies."
+                ));
+            }
+
+            let scope_rules = middleware::scope_enforcement::ScopeEnforcementRules::from_config(
+                &config.route_policies,
+            )?;
+            let scope_state =
+                middleware::scope_enforcement::ScopeEnforcementState { rules: scope_rules };
+            router = router.layer(from_fn_with_state(
+                scope_state,
+                middleware::scope_enforcement::scope_enforcement_middleware,
+            ));
+        }
+
+        // 10) Auth
         if config.auth_disabled {
             // Build security contexts for compatibility during migration
             let default_security_context = SecurityContext::builder()
@@ -343,6 +362,9 @@ impl ApiGateway {
             http_metrics,
             middleware::http_metrics::http_metrics_middleware,
         ));
+
+        // 3.5) Structured access log (runs after push_req_id populates XRequestId extension)
+        router = router.layer(from_fn(middleware::access_log::access_log_middleware));
 
         // 3) Record request_id into span + extensions (requires span to exist first => must be inner to Trace)
         router = router.layer(from_fn(middleware::request_id::push_req_id_to_extensions));
@@ -511,10 +533,13 @@ impl ApiGateway {
             }
         };
 
-        axum::serve(listener, router)
-            .with_graceful_shutdown(shutdown)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
     }
 
     /// Check if `handler_id` is already registered (returns true if duplicate)
@@ -619,7 +644,7 @@ impl ApiGateway {
 #[async_trait]
 impl modkit::Module for ApiGateway {
     async fn init(&self, ctx: &modkit::context::ModuleCtx) -> anyhow::Result<()> {
-        let cfg = ctx.config::<crate::config::ApiGatewayConfig>()?;
+        let cfg = ctx.config_or_default::<crate::config::ApiGatewayConfig>()?;
         self.config.store(Arc::new(cfg.clone()));
 
         debug!(

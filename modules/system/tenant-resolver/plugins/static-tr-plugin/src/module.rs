@@ -41,14 +41,20 @@ impl Default for StaticTrPlugin {
 #[async_trait]
 impl Module for StaticTrPlugin {
     async fn init(&self, ctx: &ModuleCtx) -> anyhow::Result<()> {
+        if self.service.get().is_some() {
+            anyhow::bail!("{} module already initialized", Self::MODULE_NAME);
+        }
+
         // Load configuration
-        let cfg: StaticTrPluginConfig = ctx.config()?;
+        let cfg: StaticTrPluginConfig = ctx.config_or_default()?;
         info!(
             vendor = %cfg.vendor,
             priority = cfg.priority,
             tenant_count = cfg.tenants.len(),
             "Loaded plugin configuration"
         );
+
+        let service = Arc::new(Service::from_config(&cfg)?);
 
         // Generate plugin instance ID
         let instance_id = TenantResolverPluginSpecV1::gts_make_instance_id(
@@ -68,8 +74,6 @@ impl Module for StaticTrPlugin {
         let results = registry.register(vec![instance_json]).await?;
         RegisterResult::ensure_all_ok(&results)?;
 
-        // Create service from config
-        let service = Arc::new(Service::from_config(&cfg));
         self.service
             .set(service.clone())
             .map_err(|_| anyhow::anyhow!("{} module already initialized", Self::MODULE_NAME))?;

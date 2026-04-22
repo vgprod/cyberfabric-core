@@ -1,3 +1,4 @@
+// Updated: 2026-04-07 by Constructor Tech
 use opentelemetry::KeyValue;
 use opentelemetry::metrics::{Counter, Gauge, Histogram, Meter, UpDownCounter};
 
@@ -57,6 +58,9 @@ pub struct MiniChatMetricsMeter {
     attachment_upload: Counter<u64>,
     attachment_upload_bytes: Histogram<f64>,
     attachments_pending: UpDownCounter<i64>,
+
+    // ── P1: Tool call counters ──────────────────────────────────────────
+    code_interpreter_calls: Counter<u64>,
 
     // ════════════════════════════════════════════════════════════════════
     // DEFERRED INSTRUMENTS — declared but not wired to the domain port.
@@ -136,25 +140,17 @@ pub struct MiniChatMetricsMeter {
     #[allow(dead_code)]
     context_truncation: Counter<u64>,
 
-    // ── P3: Cleanup job (deferred: cleanup job not implemented) ──
-    #[allow(dead_code)]
-    cleanup_job_runs: Counter<u64>,
-    #[allow(dead_code)]
-    cleanup_attempts: Counter<u64>,
-    #[allow(dead_code)]
-    cleanup_orphan_found: Counter<u64>,
-    #[allow(dead_code)]
-    cleanup_orphan_fixed: Counter<u64>,
-    #[allow(dead_code)]
+    // ── P1: Cleanup worker ──────────────────────────────────────────────
+    cleanup_completed: Counter<u64>,
+    cleanup_failed: Counter<u64>,
+    cleanup_retry: Counter<u64>,
+    #[allow(dead_code)] // gauge is recorded but not read back; the OTel SDK exports it
     cleanup_backlog: Gauge<i64>,
-    #[allow(dead_code)]
-    cleanup_latency_ms: Histogram<f64>,
+    cleanup_vs_with_failed_attachments: Counter<u64>,
 
-    // ── P3: Summary (deferred: summary feature not implemented) ──
+    // ── P3: Summary regen (deferred) ──
     #[allow(dead_code)]
     summary_regen: Counter<u64>,
-    #[allow(dead_code)]
-    summary_fallback: Counter<u64>,
 
     // ── P3: Image quota (deferred: image quota not implemented) ──
     #[allow(dead_code)]
@@ -187,9 +183,16 @@ pub struct MiniChatMetricsMeter {
     #[allow(dead_code)]
     image_turns: Counter<u64>,
 
-    // ── P2: Orphan watchdog (deferred: watchdog not implemented) ──
-    #[allow(dead_code)]
-    orphan_turn: Counter<u64>,
+    // ── P1: Orphan Watchdog ──────────────────────────────────────────────
+    orphan_detected: Counter<u64>,
+    orphan_finalized: Counter<u64>,
+    orphan_scan_duration: Histogram<f64>,
+
+    // ── P1: Thread Summary Health ───────────────────────────────────────
+    thread_summary_trigger: Counter<u64>,
+    thread_summary_execution: Counter<u64>,
+    thread_summary_cas_conflicts: Counter<u64>,
+    summary_fallback: Counter<u64>,
 
     // ── Low-priority deferred ──────────────────────────────────────────
     #[allow(dead_code)]
@@ -328,6 +331,12 @@ impl MiniChatMetricsMeter {
             attachments_pending: meter
                 .i64_up_down_counter(format!("{prefix}_attachments_pending"))
                 .with_description("Attachments currently being processed")
+                .build(),
+
+            // ── P1: Tool call counters ─────────────────────────────────
+            code_interpreter_calls: meter
+                .u64_counter(format!("{prefix}_code_interpreter_calls"))
+                .with_description("Code interpreter call completions")
                 .build(),
 
             // ════════════════════════════════════════════════════════════
@@ -470,30 +479,28 @@ impl MiniChatMetricsMeter {
                 .with_description("Context truncation events")
                 .build(),
 
-            // deferred: cleanup job not implemented
-            cleanup_job_runs: meter
-                .u64_counter(format!("{prefix}_cleanup_job_runs"))
-                .with_description("Cleanup job runs")
+            // ── P1: Cleanup worker ──────────────────────────────────────────
+            cleanup_completed: meter
+                .u64_counter(format!("{prefix}_cleanup_completed"))
+                .with_description("Successful provider cleanup operations")
                 .build(),
-            cleanup_attempts: meter
-                .u64_counter(format!("{prefix}_cleanup_attempts"))
-                .with_description("Cleanup attempts")
+            cleanup_failed: meter
+                .u64_counter(format!("{prefix}_cleanup_failed"))
+                .with_description("Attachment cleanup rows reaching terminal failed")
                 .build(),
-            cleanup_orphan_found: meter
-                .u64_counter(format!("{prefix}_cleanup_orphan_found"))
-                .with_description("Orphaned resources found during cleanup")
-                .build(),
-            cleanup_orphan_fixed: meter
-                .u64_counter(format!("{prefix}_cleanup_orphan_fixed"))
-                .with_description("Orphaned resources fixed during cleanup")
+            cleanup_retry: meter
+                .u64_counter(format!("{prefix}_cleanup_retry"))
+                .with_description("Cleanup retries delegated to shared outbox")
                 .build(),
             cleanup_backlog: meter
                 .i64_gauge(format!("{prefix}_cleanup_backlog"))
-                .with_description("Current cleanup backlog")
+                .with_description("Current cleanup backlog by state")
                 .build(),
-            cleanup_latency_ms: meter
-                .f64_histogram(format!("{prefix}_cleanup_latency_ms"))
-                .with_description("Cleanup operation latency (ms)")
+            cleanup_vs_with_failed_attachments: meter
+                .u64_counter(format!(
+                    "{prefix}_cleanup_vector_store_with_failed_attachments"
+                ))
+                .with_description("Vector store deletions with at least one failed attachment")
                 .build(),
 
             // deferred: summary feature not implemented
@@ -501,11 +508,6 @@ impl MiniChatMetricsMeter {
                 .u64_counter(format!("{prefix}_summary_regen"))
                 .with_description("Summary regeneration events")
                 .build(),
-            summary_fallback: meter
-                .u64_counter(format!("{prefix}_summary_fallback"))
-                .with_description("Summary fallback events")
-                .build(),
-
             // deferred: image quota not implemented
             quota_image_commit: meter
                 .u64_counter(format!("{prefix}_quota_image_commit"))
@@ -556,10 +558,36 @@ impl MiniChatMetricsMeter {
                 .with_description("Turns that included >=1 image")
                 .build(),
 
-            // deferred: orphan watchdog not implemented
-            orphan_turn: meter
-                .u64_counter(format!("{prefix}_orphan_turn"))
+            // ── P1: Orphan Watchdog ──────────────────────────────────────
+            orphan_detected: meter
+                .u64_counter(format!("{prefix}_orphan_detected"))
                 .with_description("Orphan turns detected by watchdog")
+                .build(),
+            orphan_finalized: meter
+                .u64_counter(format!("{prefix}_orphan_finalized"))
+                .with_description("Orphan turns finalized by watchdog (CAS won)")
+                .build(),
+            orphan_scan_duration: meter
+                .f64_histogram(format!("{prefix}_orphan_scan_duration_seconds"))
+                .with_description("Watchdog scan execution duration")
+                .build(),
+
+            // ── P1: Thread Summary Health ───────────────────────────────
+            thread_summary_trigger: meter
+                .u64_counter(format!("{prefix}_thread_summary_trigger"))
+                .with_description("Thread summary trigger evaluations")
+                .build(),
+            thread_summary_execution: meter
+                .u64_counter(format!("{prefix}_thread_summary_execution"))
+                .with_description("Thread summary execution outcomes")
+                .build(),
+            thread_summary_cas_conflicts: meter
+                .u64_counter(format!("{prefix}_thread_summary_cas_conflicts"))
+                .with_description("Thread summary CAS frontier conflicts")
+                .build(),
+            summary_fallback: meter
+                .u64_counter(format!("{prefix}_summary_fallback"))
+                .with_description("Summary fallback - previous summary kept")
                 .build(),
 
             // deferred: low-priority
@@ -795,168 +823,91 @@ impl MiniChatMetricsPort for MiniChatMetricsMeter {
     fn record_image_inputs_per_turn(&self, count: u32) {
         self.image_inputs_per_turn.record(f64::from(count), &[]);
     }
+
+    fn record_code_interpreter_calls(&self, model: &str, count: u32) {
+        self.code_interpreter_calls.add(
+            u64::from(count),
+            &[KeyValue::new(key::MODEL, model.to_owned())],
+        );
+    }
+
+    // ── P1: Orphan Watchdog ───────────────────────────────────────────
+
+    fn record_orphan_detected(&self, reason: &str) {
+        self.orphan_detected
+            .add(1, &[KeyValue::new(key::REASON, reason.to_owned())]);
+    }
+
+    fn record_orphan_finalized(&self, reason: &str) {
+        self.orphan_finalized
+            .add(1, &[KeyValue::new(key::REASON, reason.to_owned())]);
+    }
+
+    fn record_orphan_scan_duration_seconds(&self, seconds: f64) {
+        self.orphan_scan_duration.record(seconds, &[]);
+    }
+
+    // ── P1: Thread Summary Health ────────────────────────────────────
+
+    fn record_thread_summary_trigger(&self, result: &str) {
+        self.thread_summary_trigger
+            .add(1, &[KeyValue::new(key::RESULT, result.to_owned())]);
+    }
+
+    fn record_thread_summary_execution(&self, result: &str) {
+        self.thread_summary_execution
+            .add(1, &[KeyValue::new(key::RESULT, result.to_owned())]);
+    }
+
+    fn record_thread_summary_cas_conflict(&self) {
+        self.thread_summary_cas_conflicts.add(1, &[]);
+    }
+
+    fn record_summary_fallback(&self) {
+        self.summary_fallback.add(1, &[]);
+    }
+
+    // ── P1: Cleanup ──────────────────────────────────────────────────
+
+    fn record_cleanup_completed(&self, resource_type: &str) {
+        self.cleanup_completed.add(
+            1,
+            &[KeyValue::new(key::RESOURCE_TYPE, resource_type.to_owned())],
+        );
+    }
+
+    fn record_cleanup_failed(&self, resource_type: &str) {
+        self.cleanup_failed.add(
+            1,
+            &[KeyValue::new(key::RESOURCE_TYPE, resource_type.to_owned())],
+        );
+    }
+
+    fn record_cleanup_retry(&self, resource_type: &str, reason: &str) {
+        self.cleanup_retry.add(
+            1,
+            &[
+                KeyValue::new(key::RESOURCE_TYPE, resource_type.to_owned()),
+                KeyValue::new(key::REASON, reason.to_owned()),
+            ],
+        );
+    }
+
+    fn record_cleanup_backlog(&self, state: &str, resource_type: &str, count: i64) {
+        self.cleanup_backlog.record(
+            count,
+            &[
+                KeyValue::new(key::STATE, state.to_owned()),
+                KeyValue::new(key::RESOURCE_TYPE, resource_type.to_owned()),
+            ],
+        );
+    }
+
+    fn record_cleanup_vs_with_failed_attachments(&self) {
+        self.cleanup_vs_with_failed_attachments.add(1, &[]);
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use opentelemetry::metrics::MeterProvider;
-    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
-    use opentelemetry_sdk::metrics::{
-        InMemoryMetricExporter, Instrument, PeriodicReader, SdkMeterProvider, Stream,
-    };
-
-    use crate::domain::ports::MiniChatMetricsPort;
-
-    const CARDINALITY_LIMIT: usize = 2000;
-
-    fn local_provider() -> (SdkMeterProvider, InMemoryMetricExporter) {
-        let exporter = InMemoryMetricExporter::default();
-        let provider = SdkMeterProvider::builder()
-            .with_reader(PeriodicReader::builder(exporter.clone()).build())
-            .with_view(|_: &Instrument| {
-                Stream::builder()
-                    .with_cardinality_limit(CARDINALITY_LIMIT)
-                    .build()
-                    .ok()
-            })
-            .build();
-        (provider, exporter)
-    }
-
-    fn extract_counter_value(exporter: &InMemoryMetricExporter, name: &str) -> u64 {
-        let metrics = exporter.get_finished_metrics().unwrap();
-        for resource_metrics in &metrics {
-            for scope_metrics in resource_metrics.scope_metrics() {
-                for metric in scope_metrics.metrics() {
-                    if metric.name() == name
-                        && let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data()
-                    {
-                        return sum
-                            .data_points()
-                            .map(opentelemetry_sdk::metrics::data::SumDataPoint::value)
-                            .sum();
-                    }
-                }
-            }
-        }
-        0
-    }
-
-    #[test]
-    fn stream_counters_increment() {
-        let (provider, exporter) = local_provider();
-        let m = super::MiniChatMetricsMeter::new(&provider.meter("mini-chat"), "mini_chat");
-
-        m.record_stream_started("openai", "gpt-5.2");
-        m.record_stream_started("openai", "gpt-5.2");
-        m.record_stream_completed("openai", "gpt-5.2");
-        m.record_stream_failed("openai", "gpt-5.2", "rate_limited");
-
-        provider.force_flush().unwrap();
-
-        assert_eq!(
-            extract_counter_value(&exporter, "mini_chat_stream_started"),
-            2
-        );
-        assert_eq!(
-            extract_counter_value(&exporter, "mini_chat_stream_completed"),
-            1
-        );
-        assert_eq!(
-            extract_counter_value(&exporter, "mini_chat_stream_failed"),
-            1
-        );
-    }
-
-    #[test]
-    fn turn_mutation_counter_increments() {
-        let (provider, exporter) = local_provider();
-        let m = super::MiniChatMetricsMeter::new(&provider.meter("mini-chat"), "mini_chat");
-
-        m.record_turn_mutation("retry", "ok");
-        m.record_turn_mutation("edit", "not_latest");
-        m.record_turn_mutation("delete", "ok");
-
-        provider.force_flush().unwrap();
-
-        assert_eq!(
-            extract_counter_value(&exporter, "mini_chat_turn_mutation"),
-            3
-        );
-    }
-
-    #[test]
-    fn quota_counters_increment() {
-        let (provider, exporter) = local_provider();
-        let m = super::MiniChatMetricsMeter::new(&provider.meter("mini-chat"), "mini_chat");
-
-        m.record_quota_preflight("allow", "gpt-5.2", "premium");
-        m.record_quota_reserve("daily");
-        m.record_quota_commit("daily");
-        m.record_quota_overshoot("monthly");
-
-        provider.force_flush().unwrap();
-
-        assert_eq!(
-            extract_counter_value(&exporter, "mini_chat_quota_preflight"),
-            1
-        );
-        assert_eq!(
-            extract_counter_value(&exporter, "mini_chat_quota_reserve"),
-            1
-        );
-        assert_eq!(
-            extract_counter_value(&exporter, "mini_chat_quota_commit"),
-            1
-        );
-        assert_eq!(
-            extract_counter_value(&exporter, "mini_chat_quota_overshoot"),
-            1
-        );
-    }
-
-    #[test]
-    fn configurable_prefix() {
-        let (provider, exporter) = local_provider();
-        let m = super::MiniChatMetricsMeter::new(&provider.meter("custom"), "my_chat");
-
-        m.record_stream_started("azure", "gpt-4o");
-
-        provider.force_flush().unwrap();
-
-        assert_eq!(
-            extract_counter_value(&exporter, "my_chat_stream_started"),
-            1
-        );
-        // Original prefix should NOT exist
-        assert_eq!(
-            extract_counter_value(&exporter, "mini_chat_stream_started"),
-            0
-        );
-    }
-
-    #[test]
-    fn cancellation_counters_increment() {
-        let (provider, exporter) = local_provider();
-        let m = super::MiniChatMetricsMeter::new(&provider.meter("mini-chat"), "mini_chat");
-
-        m.record_cancel_requested("user_stop");
-        m.record_cancel_effective("user_stop");
-        m.record_streams_aborted("client_disconnect");
-
-        provider.force_flush().unwrap();
-
-        assert_eq!(
-            extract_counter_value(&exporter, "mini_chat_cancel_requested"),
-            1
-        );
-        assert_eq!(
-            extract_counter_value(&exporter, "mini_chat_cancel_effective"),
-            1
-        );
-        assert_eq!(
-            extract_counter_value(&exporter, "mini_chat_streams_aborted"),
-            1
-        );
-    }
-}
+#[path = "metrics_tests.rs"]
+mod metrics_tests;

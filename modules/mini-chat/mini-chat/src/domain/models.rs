@@ -171,12 +171,17 @@ pub struct ResolvedModel {
     pub system_prompt: String,
     /// Tool support flags captured at resolution time.
     pub tool_support: mini_chat_sdk::ModelToolSupport,
+    /// Model-specific prompt for thread summary generation.
+    /// Empty = fall back to global config.
+    pub thread_summary_prompt: String,
+    /// Maximum output tokens for this model.
+    pub max_output_tokens: u32,
 }
 
 impl From<&mini_chat_sdk::ModelCatalogEntry> for ResolvedModel {
     fn from(e: &mini_chat_sdk::ModelCatalogEntry) -> Self {
         Self {
-            model_id: e.model_id.clone(),
+            model_id: e.id.clone(),
             provider_model_id: e.provider_model_id.clone(),
             provider_id: e.provider_id.clone(),
             display_name: e.display_name.clone(),
@@ -195,6 +200,8 @@ impl From<&mini_chat_sdk::ModelCatalogEntry> for ResolvedModel {
             max_file_size_mb: e.general_config.max_file_size_mb,
             system_prompt: e.system_prompt.clone(),
             tool_support: e.general_config.tool_support.clone(),
+            thread_summary_prompt: e.thread_summary_prompt.clone(),
+            max_output_tokens: e.max_output_tokens,
         }
     }
 }

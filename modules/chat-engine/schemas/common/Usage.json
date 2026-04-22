@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "gts://gts.x.chat_engine.common.usage.v1",
+  "$id": "gts://gtx.cf.chat_engine.common.usage.v1~",
   "title": "Usage",
   "description": "Backend processing metrics reported by the backend plugin for a message response",
   "type": "object",

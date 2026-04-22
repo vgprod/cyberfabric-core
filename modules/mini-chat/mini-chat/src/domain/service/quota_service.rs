@@ -68,6 +68,10 @@ impl<QR: QuotaUsageRepository> QuotaService<QR> {
         self.quota_config.web_search_max_calls_per_message
     }
 
+    pub(crate) fn code_interpreter_max_calls_per_message(&self) -> u32 {
+        self.quota_config.code_interpreter_max_calls_per_message
+    }
+
     /// Compute per-tier, per-period quota warnings for the SSE `done` event.
     /// Delegates to `get_quota_status` and flattens the result.
     pub(crate) async fn compute_quota_warnings(
@@ -90,6 +94,11 @@ impl<QR: QuotaUsageRepository> QuotaService<QR> {
                     remaining_percentage: p.remaining_percentage,
                     warning: p.warning,
                     exhausted: p.exhausted,
+                    next_reset: if p.warning || p.exhausted {
+                        Some(p.next_reset)
+                    } else {
+                        None
+                    },
                 })
             })
             .collect())
@@ -247,7 +256,7 @@ impl<QR: QuotaUsageRepository> QuotaService<QR> {
         let ks = &ctx.snapshot.kill_switches;
 
         // 1. Look up selected model
-        let selected_entry = catalog.iter().find(|m| m.model_id == selected_model);
+        let selected_entry = catalog.iter().find(|m| m.id == selected_model);
 
         let (selected_tier, mut downgrade_reason) = match selected_entry {
             Some(e) if e.enabled => (e.tier, None),
@@ -315,7 +324,7 @@ impl<QR: QuotaUsageRepository> QuotaService<QR> {
             let tier_matches = |m: &&ModelCatalogEntry| m.tier == tier && m.enabled;
             let model = catalog
                 .iter()
-                .find(|m| tier_matches(m) && m.model_id == selected_model)
+                .find(|m| tier_matches(m) && m.id == selected_model)
                 .or_else(|| {
                     catalog
                         .iter()
@@ -329,14 +338,14 @@ impl<QR: QuotaUsageRepository> QuotaService<QR> {
             };
 
             // 3e. Decision
-            if effective.model_id == selected_model && downgrade_reason.is_none() {
+            if effective.id == selected_model && downgrade_reason.is_none() {
                 return CascadeDecision::Allow {
-                    effective_model: effective.model_id.clone(),
+                    effective_model: effective.id.clone(),
                     tier,
                 };
             }
             return CascadeDecision::Downgrade {
-                effective_model: effective.model_id.clone(),
+                effective_model: effective.id.clone(),
                 tier,
                 downgrade_from: selected_model.to_owned(),
                 reason: downgrade_reason.unwrap_or(DowngradeReason::PremiumQuotaExhausted),
@@ -444,8 +453,11 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
             return Err(DomainError::WebSearchDisabled);
         }
 
-        // 2. Estimate tokens
-        let estimation = token_estimator::estimate_tokens(
+        // 2. Estimate tokens — includes prior context (conversation history)
+        //    plus the current message. `prior_context_tokens` is the actual
+        //    input_tokens + output_tokens from the last completed turn, i.e.
+        //    the context that will be re-sent to the LLM on this request.
+        let mut estimation = token_estimator::estimate_tokens(
             &EstimationInput {
                 utf8_bytes: input.utf8_bytes,
                 num_images: input.num_images,
@@ -455,12 +467,15 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
             },
             &self.estimation_budgets,
         );
+        estimation.estimated_input_tokens = estimation
+            .estimated_input_tokens
+            .saturating_add(input.prior_context_tokens);
 
         // 3. Find selected model's multipliers for conservative initial reserve
         let catalog_entry = snapshot
             .model_catalog
             .iter()
-            .find(|m| m.model_id == input.selected_model && m.enabled);
+            .find(|m| m.id == input.selected_model && m.enabled);
 
         let (in_mult, out_mult) = catalog_entry.map_or(
             (1_000_000, 1_000_000), // fallback for disabled models
@@ -503,8 +518,8 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
         let selected_model = input.selected_model.clone();
         let max_output_tokens_cap = input.max_output_tokens_cap;
         let estimation_budgets = self.estimation_budgets;
-        let web_search_enabled = input.web_search_enabled;
         let web_search_daily_quota = self.quota_config.web_search_daily_quota;
+        let code_interpreter_daily_quota = self.quota_config.code_interpreter_daily_quota;
 
         let tx_result = self
             .db
@@ -532,31 +547,6 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
                         )
                         .await
                         .map_err(to_db)?;
-
-                    // 6a. Daily web search quota check (inside tx to prevent TOCTOU)
-                    if web_search_enabled {
-                        let today = period_starts[0]; // Daily period start
-                        let daily_web_search_calls = repo
-                            .get_daily_web_search_calls(tx, &scope, tenant_id, user_id, today)
-                            .await
-                            .map_err(to_db)?;
-                        if daily_web_search_calls >= web_search_daily_quota {
-                            return Ok(PreflightComputed {
-                                decision: PreflightDecision::Reject {
-                                    error_code: "quota_exceeded".to_owned(),
-                                    http_status: 429,
-                                    quota_scope: "web_search".to_owned(),
-                                },
-                                buckets: vec![],
-                                metrics_tier: selected_metrics_tier,
-                                reserved_credits_micro: 0,
-                                periods: periods.clone(),
-                                tenant_id,
-                                user_id,
-                                kill_switches: snapshot.kill_switches.clone(),
-                            });
-                        }
-                    }
 
                     let cascade_ctx = CascadeContext {
                         snapshot: &snapshot,
@@ -599,10 +589,64 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
                             let eff_entry = snapshot
                                 .model_catalog
                                 .iter()
-                                .find(|m| m.model_id == effective_model)
+                                .find(|m| m.id == effective_model)
                                 .ok_or_else(|| {
                                     to_db(DomainError::internal("effective model not in catalog"))
                                 })?;
+
+                            // 6a. Daily web search quota check (post-cascade)
+                            if eff_entry.general_config.tool_support.web_search {
+                                let today = period_starts[0];
+                                let daily_web_search_calls = repo
+                                    .get_daily_web_search_calls(
+                                        tx, &scope, tenant_id, user_id, today,
+                                    )
+                                    .await
+                                    .map_err(to_db)?;
+                                if daily_web_search_calls >= web_search_daily_quota {
+                                    return Ok(PreflightComputed {
+                                        decision: PreflightDecision::Reject {
+                                            error_code: "quota_exceeded".to_owned(),
+                                            http_status: 429,
+                                            quota_scope: "web_search".to_owned(),
+                                        },
+                                        buckets: vec![],
+                                        metrics_tier: selected_metrics_tier,
+                                        reserved_credits_micro: 0,
+                                        periods: periods.clone(),
+                                        tenant_id,
+                                        user_id,
+                                        kill_switches: snapshot.kill_switches.clone(),
+                                    });
+                                }
+                            }
+
+                            // 6b. Daily code interpreter quota check (post-cascade)
+                            if eff_entry.general_config.tool_support.code_interpreter {
+                                let today = period_starts[0];
+                                let daily_ci_calls = repo
+                                    .get_daily_code_interpreter_calls(
+                                        tx, &scope, tenant_id, user_id, today,
+                                    )
+                                    .await
+                                    .map_err(to_db)?;
+                                if daily_ci_calls >= code_interpreter_daily_quota {
+                                    return Ok(PreflightComputed {
+                                        decision: PreflightDecision::Reject {
+                                            error_code: "quota_exceeded".to_owned(),
+                                            http_status: 429,
+                                            quota_scope: "code_interpreter".to_owned(),
+                                        },
+                                        buckets: vec![],
+                                        metrics_tier: selected_metrics_tier,
+                                        reserved_credits_micro: 0,
+                                        periods: periods.clone(),
+                                        tenant_id,
+                                        user_id,
+                                        kill_switches: snapshot.kill_switches.clone(),
+                                    });
+                                }
+                            }
 
                             // Resolve per-model max_output_tokens: min(catalog, config cap)
                             let max_output_tokens_applied =
@@ -673,10 +717,11 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
                                     context_window: eff_entry.context_window,
                                     max_input_tokens: eff_entry.max_input_tokens,
                                     estimation_budgets: model_estimation_budgets,
-                                    max_retrieved_chunks_per_turn: eff_entry
-                                        .max_retrieved_chunks_per_turn,
+                                    file_search_max_num_results: eff_entry.max_num_results,
                                     max_tool_calls: eff_entry.max_tool_calls,
                                     tool_support: eff_entry.general_config.tool_support.clone(),
+                                    api_params: eff_entry.general_config.api_params.clone(),
+                                    web_search_context_size: eff_entry.web_search_context_size,
                                 },
                                 CascadeDecision::Downgrade {
                                     downgrade_from,
@@ -698,10 +743,11 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
                                     context_window: eff_entry.context_window,
                                     max_input_tokens: eff_entry.max_input_tokens,
                                     estimation_budgets: model_estimation_budgets,
-                                    max_retrieved_chunks_per_turn: eff_entry
-                                        .max_retrieved_chunks_per_turn,
+                                    file_search_max_num_results: eff_entry.max_num_results,
                                     max_tool_calls: eff_entry.max_tool_calls,
                                     tool_support: eff_entry.general_config.tool_support.clone(),
+                                    api_params: eff_entry.general_config.api_params.clone(),
+                                    web_search_context_size: eff_entry.web_search_context_size,
                                 },
                                 CascadeDecision::Reject => unreachable!(),
                             };
@@ -841,7 +887,7 @@ impl<QR: QuotaUsageRepository> QuotaService<QR> {
         let catalog_entry = snapshot
             .model_catalog
             .iter()
-            .find(|m| m.model_id == input.effective_model)
+            .find(|m| m.id == input.effective_model)
             .ok_or_else(|| {
                 DomainError::internal(format!(
                     "model {} not found in policy version {}",
@@ -974,6 +1020,7 @@ impl<QR: QuotaUsageRepository> QuotaService<QR> {
                             input_tokens: if is_total { Some(actual_input) } else { None },
                             output_tokens: if is_total { Some(actual_output) } else { None },
                             web_search_calls: input.web_search_calls,
+                            code_interpreter_calls: input.code_interpreter_calls,
                         },
                     )
                     .await?;
@@ -1031,6 +1078,7 @@ impl<QR: QuotaUsageRepository> QuotaService<QR> {
                             input_tokens: None,
                             output_tokens: None,
                             web_search_calls: input.web_search_calls,
+                            code_interpreter_calls: input.code_interpreter_calls,
                         },
                     )
                     .await?;
@@ -1070,6 +1118,7 @@ impl<QR: QuotaUsageRepository> QuotaService<QR> {
                             input_tokens: None,
                             output_tokens: None,
                             web_search_calls: 0,
+                            code_interpreter_calls: 0,
                         },
                     )
                     .await?;
@@ -1453,6 +1502,7 @@ mod tests {
             settlement_path: path,
             period_starts: default_periods(today),
             web_search_calls: 0,
+            code_interpreter_calls: 0,
         }
     }
 
@@ -1787,6 +1837,7 @@ mod tests {
             web_search_enabled: false,
             code_interpreter_enabled: false,
             max_output_tokens_cap: 4096,
+            prior_context_tokens: 0,
         }
     }
 
@@ -2227,7 +2278,11 @@ mod tests {
     async fn preflight_web_search_daily_quota_rejects() {
         let db_raw = inmem_db().await;
         let db = mock_db_provider(db_raw);
-        let snapshot = default_snapshot();
+        // Use a snapshot whose models have web_search capability enabled
+        let mut snapshot = default_snapshot();
+        for entry in &mut snapshot.model_catalog {
+            entry.general_config.tool_support.web_search = true;
+        }
         let svc = make_test_service(Arc::clone(&db), snapshot, 1.10);
 
         // Seed daily web search usage at the quota limit
@@ -2269,13 +2324,13 @@ mod tests {
                 input_tokens: Some(10),
                 output_tokens: Some(5),
                 web_search_calls: QuotaConfig::default().web_search_daily_quota,
+                code_interpreter_calls: 0,
             },
         )
         .await
         .unwrap();
 
-        let mut input = preflight_input("gpt-5");
-        input.web_search_enabled = true;
+        let input = preflight_input("gpt-5");
 
         let computed = svc.preflight_evaluate(input).await.unwrap();
         match computed.decision {
@@ -2288,6 +2343,78 @@ mod tests {
                 assert_eq!(http_status, 429);
             }
             other => panic!("expected Reject with web_search scope, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_code_interpreter_daily_quota_rejects() {
+        let db_raw = inmem_db().await;
+        let db = mock_db_provider(db_raw);
+        // Use a snapshot whose models have code_interpreter capability enabled
+        let mut snapshot = default_snapshot();
+        for entry in &mut snapshot.model_catalog {
+            entry.general_config.tool_support.code_interpreter = true;
+        }
+        let svc = make_test_service(Arc::clone(&db), snapshot, 1.10);
+
+        // Seed daily code interpreter usage at the quota limit
+        let today = OffsetDateTime::now_utc().date();
+        let scope = AccessScope::for_tenant(Uuid::nil());
+        let repo = QuotaUsageRepo;
+        let conn = db.conn().unwrap();
+
+        // First create the row via increment_reserve, then settle with code_interpreter_calls
+        use crate::domain::repos::IncrementReserveParams;
+        repo.increment_reserve(
+            &conn,
+            &scope,
+            IncrementReserveParams {
+                tenant_id: Uuid::nil(),
+                user_id: Uuid::nil(),
+                period_type: PeriodType::Daily,
+                period_start: today,
+                bucket: "total".to_owned(),
+                amount_micro: 1000,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Settle with code_interpreter_calls = daily quota (default 50)
+        use crate::domain::repos::SettleParams;
+        repo.settle(
+            &conn,
+            &scope,
+            SettleParams {
+                tenant_id: Uuid::nil(),
+                user_id: Uuid::nil(),
+                period_type: PeriodType::Daily,
+                period_start: today,
+                bucket: "total".to_owned(),
+                reserved_credits_micro: 1000,
+                actual_credits_micro: 1000,
+                input_tokens: Some(10),
+                output_tokens: Some(5),
+                web_search_calls: 0,
+                code_interpreter_calls: QuotaConfig::default().code_interpreter_daily_quota,
+            },
+        )
+        .await
+        .unwrap();
+
+        let input = preflight_input("gpt-5");
+
+        let computed = svc.preflight_evaluate(input).await.unwrap();
+        match computed.decision {
+            PreflightDecision::Reject {
+                quota_scope,
+                http_status,
+                ..
+            } => {
+                assert_eq!(quota_scope, "code_interpreter");
+                assert_eq!(http_status, 429);
+            }
+            other => panic!("expected Reject with code_interpreter scope, got {other:?}"),
         }
     }
 
@@ -2352,6 +2479,7 @@ mod tests {
             },
             period_starts: default_periods(today),
             web_search_calls: 0,
+            code_interpreter_calls: 0,
         };
 
         let outcome = svc.settle(&conn, &scope, settle_input).await.unwrap();
@@ -2447,6 +2575,7 @@ mod tests {
             },
             period_starts: default_periods(today),
             web_search_calls: 0,
+            code_interpreter_calls: 0,
         };
 
         let outcome = svc.settle(&conn, &scope, settle_input).await.unwrap();

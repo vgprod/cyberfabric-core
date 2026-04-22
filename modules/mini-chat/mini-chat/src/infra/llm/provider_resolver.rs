@@ -38,6 +38,17 @@ pub struct ProviderResolver {
 }
 
 impl ProviderResolver {
+    /// Empty resolver for testing. All `resolve()` calls will fail with
+    /// `ProviderError` since no providers are registered.
+    #[cfg(test)]
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            adapters: HashMap::new(),
+            registry: HashMap::new(),
+        }
+    }
+
     /// Build from config + OAGW gateway. Creates one adapter per distinct
     /// `ProviderKind` (not per `provider_id`).
     ///
@@ -251,7 +262,7 @@ mod tests {
         async fn list_routes(
             &self,
             _: modkit_security::SecurityContext,
-            _: uuid::Uuid,
+            _: Option<uuid::Uuid>,
             _: &oagw_sdk::ListQuery,
         ) -> Result<Vec<oagw_sdk::Route>, ServiceGatewayError> {
             unimplemented!()

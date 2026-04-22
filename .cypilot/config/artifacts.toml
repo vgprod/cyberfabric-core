@@ -1,8 +1,18 @@
+# Updated: 2026-03-27 by Constructor Tech
 # Cypilot artifacts registry (migrated from v2)
 
 [[ignore]]
 reason = "Ignore rust-traits.md — reference document for planned Rust SDK contracts, not a Cypilot SDLC artifact."
 patterns = ["modules/system/resource-group/docs/rust-traits.md"]
+
+[[ignore]]
+reason = "Ignore resource-group codebase and features — code traceability markers added incrementally across PR train. Remove after all PRs merged."
+patterns = [
+  "modules/system/resource-group/resource-group/src/*",
+  "modules/system/resource-group/resource-group/tests/*",
+  "modules/system/resource-group/resource-group-sdk/src/*",
+  "modules/system/resource-group/docs/features/*",
+]
 
 [[ignore]]
 reason = "Ignore 'modules/system' parent directory — not a module, only a grouping for system submodules."
@@ -33,8 +43,18 @@ reason = "Ignore module 'nodes-registry' (not SDLC-documented yet: missing requi
 patterns = ["modules/system/nodes-registry/*"]
 
 [[ignore]]
+reason = "Ignore oagw codebase and features — code traceability markers reverted, pending re-add. PRD/DESIGN/ADR/DECOMPOSITION still validated via autodetect."
+patterns = [
+  "modules/system/oagw/oagw/src/*",
+  "modules/system/oagw/oagw/tests/*",
+  "modules/system/oagw/oagw-sdk/src/*",
+  "modules/system/oagw/docs/features/*",
+]
+
+[[ignore]]
 reason = "Ignore legacy (pre-Cypilot) ADR files in oagw/docs root — converted copies live under docs/ADR/."
 patterns = ["modules/system/oagw/docs/adr-*.md"]
+
 
 [[ignore]]
 reason = "Ignore module 'tenant-resolver' (not SDLC-documented yet: missing required PRD/DESIGN)."
@@ -61,16 +81,13 @@ reason = "Ignore module 'file-storage' (not SDLC-documented yet: missing require
 patterns = ["modules/file-storage/*"]
 
 [[ignore]]
-reason = "Ignore module 'model-registry' (not SDLC-documented yet: missing required PRD/DESIGN)."
-patterns = ["modules/model-registry/*"]
-
-[[ignore]]
 reason = "Ignore module 'types-registry' (not SDLC-documented yet: missing required PRD/DESIGN)."
 patterns = ["modules/types-registry/*"]
 
 [[ignore]]
 reason = "Ignore module 'file-parser' (not SDLC-documented yet: missing required PRD/DESIGN)."
 patterns = ["modules/file-parser/*"]
+
 
 [[ignore]]
 reason = "Ignore serverless-runtime companion docs — supplementary to DESIGN.md, not standalone SDLC artifacts."
@@ -85,8 +102,12 @@ reason = "Ignore module 'mini-chat' docs (temporary: PRD/DESIGN constraints fail
 patterns = ["modules/mini-chat/*"]
 
 [[ignore]]
-reason = "Ignore module 'approval-service' (not SDLC-documented yet: PRD/DESIGN are placeholders)."
+reason = "Ignore module 'approval-service' (PRD/DESIGN are placeholders). Remove this ignore after PRD/DESIGN conform to template."
 patterns = ["modules/approval-service/*"]
+
+[[ignore]]
+reason = "Ignore module 'model-registry' (PRD/DESIGN headings need restructuring to match template). Remove after structural alignment."
+patterns = ["modules/model-registry/*"]
 
 [[systems]]
 name = "cyberfabric"
@@ -122,6 +143,11 @@ required = false
 [systems.autodetect.artifacts.FEATURE]
 pattern = "features/*.md"
 traceability = "FULL"
+required = false
+
+[systems.autodetect.artifacts.UPSTREAM_REQS]
+pattern = "UPSTREAM_REQS.md"
+traceability = "DOCS-ONLY"
 required = false
 
 [systems.autodetect.validation]
@@ -170,6 +196,11 @@ pattern = "features/*.md"
 traceability = "FULL"
 required = false
 
+[systems.autodetect.artifacts.UPSTREAM_REQS]
+pattern = "UPSTREAM_REQS.md"
+traceability = "DOCS-ONLY"
+required = false
+
 [systems.autodetect.validation]
 require_kind_registered_in_kit = true
 require_md_extension = true
@@ -183,6 +214,21 @@ extensions = [".rs"]
 [[systems.autodetect.codebase]]
 name = "Tests"
 path = "{system_root}/tests"
+extensions = [".rs"]
+
+[[systems.autodetect.codebase]]
+name = "Nested Modules"
+path = "{system_root}/{system}/src"
+extensions = [".rs"]
+
+[[systems.autodetect.codebase]]
+name = "Nested Tests"
+path = "{system_root}/{system}/tests"
+extensions = [".rs"]
+
+[[systems.autodetect.codebase]]
+name = "Nested SDK"
+path = "{system_root}/{system}-sdk/src"
 extensions = [".rs"]
 
 [[systems]]
@@ -219,6 +265,11 @@ required = false
 
 [systems.autodetect.artifacts.FEATURE]
 pattern = "features/*.md"
+traceability = "DOCS-ONLY"
+required = false
+
+[systems.autodetect.artifacts.UPSTREAM_REQS]
+pattern = "UPSTREAM_REQS.md"
 traceability = "DOCS-ONLY"
 required = false
 

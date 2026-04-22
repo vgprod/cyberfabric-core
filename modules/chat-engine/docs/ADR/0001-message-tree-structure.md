@@ -1,5 +1,6 @@
-Created:  2026-02-04 by Constructor Tech
-Updated:  2026-03-06 by Constructor Tech
+<!-- Created: 2026-02-04 by Constructor Tech -->
+<!-- Updated: 2026-04-07 by Constructor Tech -->
+
 # ADR-0001: Message Tree with Immutable Parents
 
 
@@ -12,7 +13,7 @@ Updated:  2026-03-06 by Constructor Tech
   - [Consequences](#consequences)
   - [Confirmation](#confirmation)
 - [Pros and Cons of the Options](#pros-and-cons-of-the-options)
-  - [Option 1: Immutable tree with parent_message_id](#option-1-immutable-tree-with-parentmessageid)
+  - [Option 1: Immutable tree with parent_message_id](#option-1-immutable-tree-with-parent_message_id)
   - [Option 2: Mutable linked list](#option-2-mutable-linked-list)
   - [Option 3: Graph structure with edge table](#option-3-graph-structure-with-edge-table)
 - [Related Design Elements](#related-design-elements)
@@ -23,11 +24,13 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
+**Review**: Revisit if message storage model changes or graph databases are considered.
+
 **ID**: `cpt-cf-chat-engine-adr-message-tree-structure`
 
 ## Context and Problem Statement
 
-Chat Engine needs to support conversation branching, message regeneration, and variant exploration while maintaining referential integrity and enabling safe concurrent message creation. How should messages be structured to enable these capabilities without introducing data inconsistencies or race conditions?
+Chat Engine needs to support conversation branching, message regeneration, and variant exploration while maintaining referential integrity and enabling safe concurrent message creation. How should messages be structured to enable these capabilities without introducing data inconsistencies or race conditions? Out of scope: message content storage format, metadata schema, and attachment handling (covered by separate ADRs).
 
 ## Decision Drivers
 

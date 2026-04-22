@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 use crate::infra::llm::ProviderKind;
 use crate::module::DEFAULT_URL_PREFIX;
 
+pub mod background;
+pub use background::{CleanupWorkerConfig, OrphanWatchdogConfig, ThreadSummaryWorkerConfig};
+
 #[derive(Debug, Clone, Serialize, Deserialize, modkit_macros::ExpandVars)]
 #[serde(deny_unknown_fields)]
 pub struct MiniChatConfig {
@@ -37,6 +40,18 @@ pub struct MiniChatConfig {
     #[expand_vars]
     #[serde(default = "default_providers")]
     pub providers: HashMap<String, ProviderEntry>,
+    /// Orphan watchdog background worker.
+    #[serde(default)]
+    pub orphan_watchdog: OrphanWatchdogConfig,
+    /// Thread summary background worker.
+    #[serde(default)]
+    pub thread_summary_worker: ThreadSummaryWorkerConfig,
+    /// Cleanup background worker for soft-deleted chat resources.
+    #[serde(default)]
+    pub cleanup_worker: CleanupWorkerConfig,
+    /// Image thumbnail generation settings.
+    #[serde(default)]
+    pub thumbnail: ThumbnailConfig,
 }
 
 /// Which file/vector-store implementation to use for RAG operations.
@@ -385,6 +400,10 @@ impl Default for MiniChatConfig {
             client_credentials: ClientCredentialsConfig::default(),
             metrics: MetricsConfig::default(),
             providers: default_providers(),
+            orphan_watchdog: OrphanWatchdogConfig::default(),
+            thread_summary_worker: ThreadSummaryWorkerConfig::default(),
+            cleanup_worker: CleanupWorkerConfig::default(),
+            thumbnail: ThumbnailConfig::default(),
         }
     }
 }
@@ -490,6 +509,12 @@ fn default_web_search_max_calls() -> u32 {
 fn default_web_search_daily_quota() -> u32 {
     75
 }
+fn default_ci_max_calls() -> u32 {
+    10
+}
+fn default_ci_daily_quota() -> u32 {
+    50
+}
 fn default_warning_threshold_pct() -> u8 {
     80
 }
@@ -504,6 +529,10 @@ pub struct QuotaConfig {
     pub web_search_max_calls_per_message: u32,
     #[serde(default = "default_web_search_daily_quota")]
     pub web_search_daily_quota: u32,
+    #[serde(default = "default_ci_max_calls")]
+    pub code_interpreter_max_calls_per_message: u32,
+    #[serde(default = "default_ci_daily_quota")]
+    pub code_interpreter_daily_quota: u32,
     #[serde(default = "default_warning_threshold_pct")]
     pub warning_threshold_pct: u8,
 }
@@ -514,6 +543,8 @@ impl Default for QuotaConfig {
             overshoot_tolerance_factor: default_overshoot_tolerance(),
             web_search_max_calls_per_message: default_web_search_max_calls(),
             web_search_daily_quota: default_web_search_daily_quota(),
+            code_interpreter_max_calls_per_message: default_ci_max_calls(),
+            code_interpreter_daily_quota: default_ci_daily_quota(),
             warning_threshold_pct: default_warning_threshold_pct(),
         }
     }
@@ -532,6 +563,12 @@ impl QuotaConfig {
         }
         if self.web_search_daily_quota == 0 {
             return Err("web_search_daily_quota must be > 0".to_owned());
+        }
+        if self.code_interpreter_max_calls_per_message == 0 {
+            return Err("code_interpreter_max_calls_per_message must be > 0".to_owned());
+        }
+        if self.code_interpreter_daily_quota == 0 {
+            return Err("code_interpreter_daily_quota must be > 0".to_owned());
         }
         if self.warning_threshold_pct == 0 || self.warning_threshold_pct >= 100 {
             return Err(format!(
@@ -554,6 +591,12 @@ pub struct OutboxConfig {
     /// Queue name for attachment cleanup events.
     #[serde(default = "default_outbox_cleanup_queue_name")]
     pub cleanup_queue_name: String,
+    /// Queue name for thread summary task events.
+    #[serde(default = "default_thread_summary_queue_name")]
+    pub thread_summary_queue_name: String,
+    /// Queue name for chat-deletion cleanup events.
+    #[serde(default = "default_chat_cleanup_queue_name")]
+    pub chat_cleanup_queue_name: String,
     /// Queue name for audit events.
     #[serde(default = "default_audit_queue_name")]
     pub audit_queue_name: String,
@@ -568,6 +611,8 @@ impl Default for OutboxConfig {
         Self {
             queue_name: default_outbox_queue_name(),
             cleanup_queue_name: default_outbox_cleanup_queue_name(),
+            thread_summary_queue_name: default_thread_summary_queue_name(),
+            chat_cleanup_queue_name: default_chat_cleanup_queue_name(),
             audit_queue_name: default_audit_queue_name(),
             num_partitions: default_outbox_num_partitions(),
         }
@@ -581,6 +626,12 @@ impl OutboxConfig {
         }
         if self.cleanup_queue_name.trim().is_empty() {
             return Err("outbox cleanup_queue_name must not be empty".to_owned());
+        }
+        if self.chat_cleanup_queue_name.trim().is_empty() {
+            return Err("outbox chat_cleanup_queue_name must not be empty".to_owned());
+        }
+        if self.thread_summary_queue_name.trim().is_empty() {
+            return Err("outbox thread_summary_queue_name must not be empty".to_owned());
         }
         if self.audit_queue_name.trim().is_empty() {
             return Err("outbox audit_queue_name must not be empty".to_owned());
@@ -601,6 +652,14 @@ fn default_outbox_queue_name() -> String {
 
 fn default_outbox_cleanup_queue_name() -> String {
     "mini-chat.attachment_cleanup".to_owned()
+}
+
+fn default_chat_cleanup_queue_name() -> String {
+    "mini-chat.chat_cleanup".to_owned()
+}
+
+fn default_thread_summary_queue_name() -> String {
+    "mini-chat.thread_summary".to_owned()
 }
 
 fn default_audit_queue_name() -> String {
@@ -713,10 +772,24 @@ pub struct RagConfig {
     /// Maximum number of image attachments per message (DESIGN.md B.8).
     #[serde(default = "default_max_images_per_message")]
     pub max_images_per_message: u32,
+
+    /// Maximum concurrent in-flight uploads **per process** (across all tenants
+    /// within this pod). Each upload can buffer up to `uploaded_file_max_size_kb`
+    /// in memory; this semaphore prevents OOM under burst load.
+    ///
+    /// Note: cluster-wide concurrency scales with the number of replicas
+    /// (`max_concurrent_uploads × num_pods`).
+    /// Valid range: 1–256 (default 10).
+    #[serde(default = "default_max_concurrent_uploads")]
+    pub max_concurrent_uploads: u16,
 }
 
 fn default_max_images_per_message() -> u32 {
     4
+}
+
+fn default_max_concurrent_uploads() -> u16 {
+    10
 }
 
 impl Default for RagConfig {
@@ -728,6 +801,7 @@ impl Default for RagConfig {
             uploaded_image_max_size_kb: default_uploaded_image_max_size_kb(),
             allow_csv_upload: true,
             max_images_per_message: default_max_images_per_message(),
+            max_concurrent_uploads: default_max_concurrent_uploads(),
         }
     }
 }
@@ -748,6 +822,84 @@ impl RagConfig {
         }
         if self.max_images_per_message == 0 {
             return Err("rag max_images_per_message must be > 0".into());
+        }
+        if self.max_concurrent_uploads == 0 || self.max_concurrent_uploads > 256 {
+            return Err(format!(
+                "rag max_concurrent_uploads must be 1-256, got {}",
+                self.max_concurrent_uploads
+            ));
+        }
+        Ok(())
+    }
+}
+
+// ── Thumbnail config ────────────────────────────────────────────────────
+
+fn default_thumbnail_width() -> u32 {
+    128
+}
+fn default_thumbnail_height() -> u32 {
+    128
+}
+fn default_thumbnail_max_bytes() -> usize {
+    131_072 // 128 KiB
+}
+fn default_thumbnail_max_pixels() -> u64 {
+    100_000_000
+}
+fn default_thumbnail_max_decode_bytes() -> usize {
+    33_554_432 // 32 MiB
+}
+
+/// Configuration for server-generated image thumbnails (DESIGN.md §B.6).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThumbnailConfig {
+    /// Target thumbnail width in pixels.
+    #[serde(default = "default_thumbnail_width")]
+    pub width: u32,
+    /// Target thumbnail height in pixels.
+    #[serde(default = "default_thumbnail_height")]
+    pub height: u32,
+    /// Maximum decoded thumbnail size in bytes (128 KiB).
+    #[serde(default = "default_thumbnail_max_bytes")]
+    pub max_bytes: usize,
+    /// Maximum source image pixel count before skipping thumbnail generation.
+    #[serde(default = "default_thumbnail_max_pixels")]
+    pub max_pixels: u64,
+    /// Maximum bytes the image decoder may allocate before aborting.
+    #[serde(default = "default_thumbnail_max_decode_bytes")]
+    pub max_decode_bytes: usize,
+}
+
+impl Default for ThumbnailConfig {
+    fn default() -> Self {
+        Self {
+            width: default_thumbnail_width(),
+            height: default_thumbnail_height(),
+            max_bytes: default_thumbnail_max_bytes(),
+            max_pixels: default_thumbnail_max_pixels(),
+            max_decode_bytes: default_thumbnail_max_decode_bytes(),
+        }
+    }
+}
+
+impl ThumbnailConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.width == 0 {
+            return Err("thumbnail width must be > 0".into());
+        }
+        if self.height == 0 {
+            return Err("thumbnail height must be > 0".into());
+        }
+        if self.max_bytes == 0 {
+            return Err("thumbnail max_bytes must be > 0".into());
+        }
+        if self.max_pixels == 0 {
+            return Err("thumbnail max_pixels must be > 0".into());
+        }
+        if self.max_decode_bytes == 0 {
+            return Err("thumbnail max_decode_bytes must be > 0".into());
         }
         Ok(())
     }
@@ -773,6 +925,7 @@ mod tests {
         OutboxConfig::default().validate().unwrap();
         ContextConfig::default().validate().unwrap();
         RagConfig::default().validate().unwrap();
+        ThumbnailConfig::default().validate().unwrap();
     }
 
     #[test]
@@ -842,6 +995,22 @@ mod tests {
         assert!(
             (QuotaConfig {
                 web_search_daily_quota: 0,
+                ..QuotaConfig::default()
+            })
+            .validate()
+            .is_err()
+        );
+        assert!(
+            (QuotaConfig {
+                code_interpreter_max_calls_per_message: 0,
+                ..QuotaConfig::default()
+            })
+            .validate()
+            .is_err()
+        );
+        assert!(
+            (QuotaConfig {
+                code_interpreter_daily_quota: 0,
                 ..QuotaConfig::default()
             })
             .validate()
@@ -1350,5 +1519,70 @@ mod tests {
             prefix: "  custom.prefix  ".to_owned(),
         };
         assert_eq!(cfg.effective_prefix("mini-chat"), "custom.prefix");
+    }
+
+    #[test]
+    fn rag_config_max_concurrent_uploads_validation() {
+        // zero is rejected
+        assert!(
+            RagConfig {
+                max_concurrent_uploads: 0,
+                ..RagConfig::default()
+            }
+            .validate()
+            .is_err()
+        );
+
+        // over 256 is rejected
+        assert!(
+            RagConfig {
+                max_concurrent_uploads: 257,
+                ..RagConfig::default()
+            }
+            .validate()
+            .is_err()
+        );
+
+        // boundary values are accepted
+        assert!(
+            RagConfig {
+                max_concurrent_uploads: 1,
+                ..RagConfig::default()
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            RagConfig {
+                max_concurrent_uploads: 256,
+                ..RagConfig::default()
+            }
+            .validate()
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn upload_semaphore_exhaustion_blocks_further_acquires() {
+        use tokio::sync::Semaphore;
+
+        let sem = Semaphore::new(2);
+
+        // Acquire all permits.
+        let p1 = sem.try_acquire().expect("first permit");
+        let _p2 = sem.try_acquire().expect("second permit");
+
+        // Third acquire must fail — this is the 503 path.
+        assert!(
+            sem.try_acquire().is_err(),
+            "semaphore should be exhausted after all permits are taken"
+        );
+
+        // Releasing a permit makes the semaphore available again.
+        drop(p1);
+        assert!(
+            sem.try_acquire().is_ok(),
+            "permit should be available after release"
+        );
     }
 }

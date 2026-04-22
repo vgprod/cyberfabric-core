@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use tokio::sync::Semaphore;
+
 use opentelemetry::trace::TraceContextExt as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
@@ -8,7 +10,9 @@ use authz_resolver_sdk::{AuthZResolverClient, PolicyEnforcer};
 use modkit_db::DBProvider;
 use modkit_macros::domain_model;
 
-use crate::config::{ContextConfig, EstimationBudgets, QuotaConfig, RagConfig, StreamingConfig};
+use crate::config::{
+    ContextConfig, EstimationBudgets, QuotaConfig, RagConfig, StreamingConfig, ThumbnailConfig,
+};
 use crate::domain::ports::MiniChatMetricsPort;
 use crate::domain::repos::{
     AttachmentRepository, ChatRepository, MessageAttachmentRepository, MessageRepository,
@@ -33,6 +37,7 @@ pub(crate) mod replay;
 mod stream_service;
 #[cfg(test)]
 pub(crate) mod test_helpers;
+pub(crate) mod thumbnail;
 pub(crate) mod token_estimator;
 mod turn_service;
 
@@ -153,7 +158,7 @@ pub(crate) struct AppServices<
     VSR: VectorStoreRepository + 'static,
     MAR: MessageAttachmentRepository + 'static,
 > {
-    pub(crate) chats: ChatService<CR, TSR>,
+    pub(crate) chats: ChatService<CR, AR, TSR>,
     pub(crate) messages: MessageService<MR, CR, RR>,
     pub(crate) stream: StreamService<TR, MR, QR, CR, TSR, AR, VSR, MAR>,
     pub(crate) turns: TurnService<TR, MR, CR, MAR>,
@@ -167,6 +172,8 @@ pub(crate) struct AppServices<
     pub(crate) turn_repo: Arc<TR>,
     pub(crate) enforcer: PolicyEnforcer,
     pub(crate) metrics: Arc<dyn MiniChatMetricsPort>,
+    /// Semaphore bounding concurrent in-flight uploads for memory backpressure.
+    pub(crate) upload_semaphore: Arc<Semaphore>,
 }
 
 impl<
@@ -198,7 +205,9 @@ impl<
         file_storage: Arc<dyn crate::domain::ports::FileStorageProvider>,
         vector_store_provider: Arc<dyn crate::domain::ports::VectorStoreProvider>,
         rag_config: RagConfig,
+        thumbnail_config: ThumbnailConfig,
         metrics: Arc<dyn MiniChatMetricsPort>,
+        summary_config: crate::config::background::ThreadSummaryWorkerConfig,
     ) -> Self {
         let enforcer = PolicyEnforcer::new(authz);
 
@@ -220,6 +229,7 @@ impl<
             Arc::clone(&quota_svc) as Arc<dyn QuotaSettler>,
             Arc::clone(outbox_enqueuer),
             Arc::clone(&metrics),
+            summary_config,
         ));
 
         let turns = TurnService::new(
@@ -233,11 +243,15 @@ impl<
             Arc::clone(&metrics),
         );
 
+        let upload_semaphore = Arc::new(Semaphore::new(rag_config.max_concurrent_uploads.into()));
+
         Self {
             chats: ChatService::new(
                 Arc::clone(&db),
                 Arc::clone(&repos.chat),
+                Arc::clone(&repos.attachment),
                 Arc::clone(&repos.thread_summary),
+                Arc::clone(outbox_enqueuer),
                 enforcer.clone(),
                 Arc::clone(model_resolver),
             ),
@@ -286,6 +300,7 @@ impl<
                 Arc::clone(provider_resolver),
                 Arc::clone(model_resolver),
                 rag_config,
+                thumbnail_config,
                 Arc::clone(&metrics),
             ),
             models: ModelService::new(
@@ -300,6 +315,7 @@ impl<
             turn_repo: Arc::clone(&repos.turn),
             enforcer,
             metrics,
+            upload_semaphore,
         }
     }
 }

@@ -43,6 +43,7 @@ logs
 
 # Claude Code local settings
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 CLAUDE.local.md
 .setup-stamp
@@ -54,3 +55,5 @@ CLAUDE.local.md
 testing/e2e/.env.e2e
 testing/e2e/.env.e2e.*
 testing/e2e/.venv/
+testing/e2e/logs/
+.docker-stage

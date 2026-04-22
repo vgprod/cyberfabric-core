@@ -1,6 +1,7 @@
 use mini_chat_sdk::RequesterType;
 use modkit_macros::domain_model;
 use modkit_security::AccessScope;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::domain::llm::Usage;
@@ -48,9 +49,19 @@ pub struct FinalizationInput {
     pub downgrade_reason: Option<String>,
     pub period_starts: Vec<(PeriodType, time::Date)>,
 
-    // ── Web search telemetry ──
+    // ── Tool call telemetry ──
     /// Number of completed web search calls during this turn.
     pub web_search_calls: u32,
+    /// Number of completed code interpreter calls during this turn.
+    pub code_interpreter_calls: u32,
+
+    /// Context window size of the effective model (tokens) — for summary trigger.
+    pub context_window: u32,
+    /// Estimated input tokens from context assembly (all messages + system prompt).
+    pub assembled_context_tokens: u64,
+    /// `true` when context assembly dropped older messages due to budget.
+    /// Primary signal for the thread summary trigger.
+    pub messages_truncated: bool,
 
     /// Time-to-first-token in milliseconds (captured in `stream_service`).
     pub ttft_ms: Option<u64>,
@@ -94,4 +105,30 @@ pub fn settlement_path_from_billing(
         SettlementMethod::Estimated => SettlementPath::Estimated,
         SettlementMethod::Released => SettlementPath::Released,
     }
+}
+
+/// Simplified input for orphan finalization.
+/// Built from the turn row — no streaming context available.
+#[domain_model]
+#[derive(Debug, Clone)]
+pub struct OrphanFinalizationInput {
+    pub turn_id: Uuid,
+    pub tenant_id: Uuid,
+    pub chat_id: Uuid,
+    pub request_id: Uuid,
+    /// From `requester_user_id`. Nullable because some turns may have system requesters.
+    pub user_id: Option<Uuid>,
+    pub requester_type: RequesterType,
+    pub effective_model: Option<String>,
+    pub reserve_tokens: Option<i64>,
+    pub max_output_tokens_applied: Option<i32>,
+    pub reserved_credits_micro: Option<i64>,
+    pub policy_version_applied: Option<i64>,
+    pub minimal_generation_floor_applied: Option<i32>,
+    /// `started_at` — used to derive `period_starts` for quota settlement.
+    pub started_at: OffsetDateTime,
+    /// Completed web search tool calls persisted from the DB (0 if pod crashed before increment).
+    pub web_search_completed_count: u32,
+    /// Completed code interpreter tool calls persisted from the DB (0 if pod crashed before increment).
+    pub code_interpreter_completed_count: u32,
 }

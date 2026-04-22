@@ -52,6 +52,8 @@ This design satisfies the requirements for centralized outbound traffic manageme
 | Multi-tenant hierarchy | `cpt-cf-oagw-fr-hierarchical-config` | Configuration sharing/inheritance across tenant tree |
 | Plugin extensibility | `cpt-cf-oagw-fr-plugin-system` | Three plugin types (Auth/Guard/Transform) with trait-based isolation |
 | Low-latency proxy path | `cpt-cf-oagw-nfr-low-latency` | In-memory rate limiters |
+| Configuration layering | `cpt-cf-oagw-fr-config-layering` | Upstream < Route < Tenant merge priority |
+| Alias resolution | `cpt-cf-oagw-fr-alias-resolution` | Path-based routing with alias shadowing |
 | Credential isolation | `cpt-cf-oagw-nfr-credential-isolation` | Auth via `cred_store` references, no direct secret storage |
 | ModKit integration | CyberFabric platform | Single-executable deployment, trait-based DI, secure ORM |
 
@@ -274,7 +276,7 @@ Multiple per upstream/route. Can reject requests before they reach upstream.
 | Plugin ID | Description |
 |---|---|
 | `gts.x.core.oagw.guard_plugin.v1~x.core.oagw.timeout.v1` | Request timeout enforcement |
-| `gts.x.core.oagw.guard_plugin.v1~x.core.oagw.cors.v1` | CORS preflight validation |
+| `gts.x.core.oagw.guard_plugin.v1~x.core.oagw.cors.v1` | CORS origin validation (actual requests; preflight handled at handler level — see [ADR: CORS](./ADR/0006-cors.md)) |
 
 Circuit breaker is **core functionality** (not a plugin). See [ADR: Circuit Breaker](./ADR/0005-circuit-breaker.md).
 
@@ -495,7 +497,8 @@ Validation rules that can reject requests:
 | Query params | Validate against `match.http.query_allowlist`; reject if unknown |
 | Path suffix | Reject if `path_suffix_mode`: `disabled` and suffix provided |
 | Body | See body validation rules below |
-| CORS | Reject if CORS policy validation fails |
+| CORS origin | Reject if origin is not in upstream's `allowed_origins` (actual cross-origin requests only; preflight returns permissive 204 at handler level — see [ADR: CORS](./ADR/0006-cors.md)) |
+| CORS method | Reject if method is not in upstream's `allowed_methods` (actual cross-origin requests only) |
 
 #### Body Validation Rules
 
@@ -563,7 +566,7 @@ Without appropriate permissions, descendant must use ancestor's configuration as
 - Headers: Well-known headers stripping and validation.
 - Request Validation: Path, query parameters validation against route configuration.
 
-**Cross-Origin Resource Sharing (CORS)**: Built-in, configured per upstream/route. Preflight OPTIONS requests handled locally (no upstream round-trip). See [ADR: CORS](./ADR/0006-cors.md).
+**Cross-Origin Resource Sharing (CORS)**: Built-in, configured per upstream/route. Preflight OPTIONS requests return a permissive 204 at the handler level (no upstream resolution or tenant context required). Origin validation happens on actual requests after upstream resolution, before forwarding. See [ADR: CORS](./ADR/0006-cors.md).
 
 **HTTP Version Negotiation**: OAGW uses adaptive per-host HTTP version detection:
 1. **First request**: Attempt HTTP/2 via ALPN during TLS handshake
@@ -611,12 +614,12 @@ Authorization checks:
 | `POST` | `/api/oagw/v1/upstreams` | Create upstream |
 | `GET` | `/api/oagw/v1/upstreams` | List upstreams |
 | `GET` | `/api/oagw/v1/upstreams/{id}` | Get upstream by ID |
-| `PUT` | `/api/oagw/v1/upstreams/{id}` | Update upstream |
+| `PUT` | `/api/oagw/v1/upstreams/{id}` | Replace upstream |
 | `DELETE` | `/api/oagw/v1/upstreams/{id}` | Delete upstream |
 | `POST` | `/api/oagw/v1/routes` | Create route |
 | `GET` | `/api/oagw/v1/routes` | List routes |
 | `GET` | `/api/oagw/v1/routes/{id}` | Get route by ID |
-| `PUT` | `/api/oagw/v1/routes/{id}` | Update route |
+| `PUT` | `/api/oagw/v1/routes/{id}` | Replace route |
 | `DELETE` | `/api/oagw/v1/routes/{id}` | Delete route |
 | `POST` | `/api/oagw/v1/plugins` | Create plugin |
 | `GET` | `/api/oagw/v1/plugins` | List plugins |
@@ -626,9 +629,41 @@ Authorization checks:
 
 IDs use anonymous GTS identifiers: `gts.x.core.oagw.{type}.v1~{uuid}`. Plugins are immutable (no PUT). DELETE returns `409 PluginInUse` when referenced.
 
-List endpoints support OData query parameters: `$filter`, `$select`, `$orderby`, `$top`, `$skip`.
+#### CRUD Semantics
 
-**Upstream List Query Parameters**:
+**POST (Create)**:
+
+- Server-generated UUID for all resources.
+- **Upstream**: Alias auto-derived from hostname endpoints; explicit alias required for IP-based. Unique per `(tenant_id, alias)` — returns 409 on conflict. If alias matches an ancestor upstream, the operation is a "bind" requiring `oagw:upstream:bind` permission and respecting sharing mode constraints (`enforce` blocks overrides, `private` blocks visibility).
+- **Route**: `upstream_id` must belong to the calling tenant — ancestor upstreams are not directly addressable. Validates match rule uniqueness within the upstream (same path + priority + method → 409).
+
+**PUT (Replace)**:
+
+- Full replacement — all fields are overwritten; omitted optional fields are cleared.
+- **Upstream**: Alias is recomputed when hostname endpoints change; only IP-based upstreams allow explicit alias updates. Re-validates ancestor bind constraints if overrides, endpoints, or alias changed.
+- **Route**: `upstream_id` is immutable (not present in the update DTO). Re-validates match rule uniqueness.
+
+**Immutable fields**: `id`, `tenant_id` on all resources. Route `upstream_id` is also immutable.
+
+#### Tenant Scoping
+
+All CRUD operations are strictly scoped to the calling tenant. Ancestor resources are invisible (404) to descendants via the management API.
+
+| Operation | Own resources | Ancestor resources |
+|---|---|---|
+| POST (create) | Yes | N/A (bind via alias match) |
+| PUT (replace) | Yes | 404 |
+| DELETE | Yes | 404 |
+| GET / List | Yes | 404 |
+| Proxy (data plane) | Yes | Inherited via tenant chain walk |
+
+At proxy time, `resolve_alias` walks the tenant chain (descendant → root) to find the closest enabled upstream by alias, then searches the chain for matching routes. Descendant routes take priority. Ancestor routes are inherited but cannot be viewed or modified through the management API.
+
+#### List Query Parameters
+
+All list endpoints support OData query parameters: `$filter`, `$select`, `$orderby`, `$top`, `$skip`.
+
+**Upstream**:
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -638,7 +673,7 @@ List endpoints support OData query parameters: `$filter`, `$select`, `$orderby`,
 | `$top` | integer | Max results (default: 50, max: 100) |
 | `$skip` | integer | Offset for pagination |
 
-**Route List Query Parameters**:
+**Route**:
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -648,7 +683,7 @@ List endpoints support OData query parameters: `$filter`, `$select`, `$orderby`,
 | `$top` | integer | Max results (default: 50, max: 100) |
 | `$skip` | integer | Offset for pagination |
 
-**Plugin List Query Parameters**:
+**Plugin**:
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -914,6 +949,7 @@ Structured JSON logs to stdout, ingested by centralized logging system (e.g., EL
 5. [Security] TLS certificate pinning — Pin specific certificates/public keys for critical upstreams to prevent MITM attacks
 6. [Security] mTLS support — Mutual TLS for client certificate authentication with upstream services
 7. [Protocol] gRPC support — HTTP/2 multiplexing with content-type detection — [ADR: gRPC Support](./ADR/0014-grpc-support.md) — **Requires prototype**
+8. [Deployment] Registry-only mode — All upstreams, routes, and plugin configs sourced exclusively from type registry (no management API CRUD). The `post_init()` provisioning path already materializes registry entities through the full domain validation pipeline. A registry-only mode would require: (a) config flag to disable or make CRUD endpoints read-only, (b) soft-fail on invalid entities (skip with warning instead of blocking startup), (c) a validation feedback mechanism so config authors can discover rejected entities — e.g., status writeback on GTS entities or a dedicated provisioning status endpoint. This is a platform-level concern: any module consuming GTS entities for configuration faces the same write-time validation gap.
 
 ## 5. Traceability
 

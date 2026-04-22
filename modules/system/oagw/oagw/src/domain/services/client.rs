@@ -119,7 +119,7 @@ impl ServiceGatewayClientV1 for ServiceGatewayClientV1Facade {
     async fn list_routes(
         &self,
         ctx: SecurityContext,
-        upstream_id: Uuid,
+        upstream_id: Option<Uuid>,
         query: &oagw_sdk::ListQuery,
     ) -> Result<Vec<oagw_sdk::Route>, ServiceGatewayError> {
         let q = model::ListQuery {
@@ -259,6 +259,30 @@ fn domain_err_to_sdk(err: DomainError) -> ServiceGatewayError {
             detail,
             instance,
         },
+        DomainError::CorsOriginNotAllowed {
+            origin, instance, ..
+        } => ServiceGatewayError::Forbidden {
+            detail: format!("CORS origin not allowed: {origin} (instance: {instance})"),
+        },
+        DomainError::CorsMethodNotAllowed {
+            method, instance, ..
+        } => ServiceGatewayError::Forbidden {
+            detail: format!("CORS method not allowed: {method} (instance: {instance})"),
+        },
+        DomainError::StreamAborted { detail, instance } => {
+            ServiceGatewayError::StreamAborted { detail, instance }
+        }
+        DomainError::LinkUnavailable { detail, instance } => {
+            ServiceGatewayError::LinkUnavailable { detail, instance }
+        }
+        DomainError::CircuitBreakerOpen { detail, instance } => {
+            ServiceGatewayError::CircuitBreakerOpen { detail, instance }
+        }
+        DomainError::IdleTimeout { detail, instance } => {
+            ServiceGatewayError::IdleTimeout { detail, instance }
+        }
+        DomainError::PluginNotFound { detail } => ServiceGatewayError::PluginNotFound { detail },
+        DomainError::PluginInUse { detail } => ServiceGatewayError::PluginInUse { detail },
         DomainError::Forbidden { detail } => ServiceGatewayError::Forbidden { detail },
     }
 }
@@ -278,6 +302,7 @@ fn sdk_create_upstream_to_domain(
         headers: req.headers().cloned().map(headers_config_to_domain),
         plugins: req.plugins().cloned().map(plugins_config_to_domain),
         rate_limit: req.rate_limit().cloned().map(rate_limit_config_to_domain),
+        cors: req.cors().cloned().map(cors_config_to_domain),
         tags: req.tags().to_vec(),
         enabled: req.enabled(),
     }
@@ -287,14 +312,15 @@ fn sdk_update_upstream_to_domain(
     req: oagw_sdk::UpdateUpstreamRequest,
 ) -> model::UpdateUpstreamRequest {
     model::UpdateUpstreamRequest {
-        server: req.server().cloned().map(server_to_domain),
-        protocol: req.protocol().map(|s| s.to_string()),
+        server: server_to_domain(req.server().clone()),
+        protocol: req.protocol().to_string(),
         alias: req.alias().map(|s| s.to_string()),
         auth: req.auth().cloned().map(auth_config_to_domain),
         headers: req.headers().cloned().map(headers_config_to_domain),
         plugins: req.plugins().cloned().map(plugins_config_to_domain),
         rate_limit: req.rate_limit().cloned().map(rate_limit_config_to_domain),
-        tags: req.tags().map(|s| s.to_vec()),
+        cors: req.cors().cloned().map(cors_config_to_domain),
+        tags: req.tags().to_vec(),
         enabled: req.enabled(),
     }
 }
@@ -305,6 +331,7 @@ fn sdk_create_route_to_domain(req: oagw_sdk::CreateRouteRequest) -> model::Creat
         match_rules: match_rules_to_domain(req.match_rules().clone()),
         plugins: req.plugins().cloned().map(plugins_config_to_domain),
         rate_limit: req.rate_limit().cloned().map(rate_limit_config_to_domain),
+        cors: req.cors().cloned().map(cors_config_to_domain),
         tags: req.tags().to_vec(),
         priority: req.priority(),
         enabled: req.enabled(),
@@ -313,10 +340,11 @@ fn sdk_create_route_to_domain(req: oagw_sdk::CreateRouteRequest) -> model::Creat
 
 fn sdk_update_route_to_domain(req: oagw_sdk::UpdateRouteRequest) -> model::UpdateRouteRequest {
     model::UpdateRouteRequest {
-        match_rules: req.match_rules().cloned().map(match_rules_to_domain),
+        match_rules: match_rules_to_domain(req.match_rules().clone()),
         plugins: req.plugins().cloned().map(plugins_config_to_domain),
         rate_limit: req.rate_limit().cloned().map(rate_limit_config_to_domain),
-        tags: req.tags().map(|s| s.to_vec()),
+        cors: req.cors().cloned().map(cors_config_to_domain),
+        tags: req.tags().to_vec(),
         priority: req.priority(),
         enabled: req.enabled(),
     }
@@ -452,6 +480,33 @@ fn plugins_config_to_domain(v: oagw_sdk::PluginsConfig) -> model::PluginsConfig 
     }
 }
 
+fn cors_http_method_to_domain(v: oagw_sdk::CorsHttpMethod) -> model::CorsHttpMethod {
+    match v {
+        oagw_sdk::CorsHttpMethod::Get => model::CorsHttpMethod::Get,
+        oagw_sdk::CorsHttpMethod::Post => model::CorsHttpMethod::Post,
+        oagw_sdk::CorsHttpMethod::Put => model::CorsHttpMethod::Put,
+        oagw_sdk::CorsHttpMethod::Delete => model::CorsHttpMethod::Delete,
+        oagw_sdk::CorsHttpMethod::Patch => model::CorsHttpMethod::Patch,
+        oagw_sdk::CorsHttpMethod::Head => model::CorsHttpMethod::Head,
+        oagw_sdk::CorsHttpMethod::Options => model::CorsHttpMethod::Options,
+    }
+}
+
+fn cors_config_to_domain(v: oagw_sdk::CorsConfig) -> model::CorsConfig {
+    model::CorsConfig {
+        sharing: sharing_mode_to_domain(v.sharing),
+        enabled: v.enabled,
+        allowed_origins: v.allowed_origins,
+        allowed_methods: v
+            .allowed_methods
+            .into_iter()
+            .map(cors_http_method_to_domain)
+            .collect(),
+        expose_headers: v.expose_headers,
+        allow_credentials: v.allow_credentials,
+    }
+}
+
 fn http_method_to_domain(v: oagw_sdk::HttpMethod) -> model::HttpMethod {
     match v {
         oagw_sdk::HttpMethod::Get => model::HttpMethod::Get,
@@ -564,6 +619,7 @@ fn upstream_to_sdk(u: model::Upstream) -> oagw_sdk::Upstream {
                 .collect(),
         }),
         rate_limit: u.rate_limit.map(rate_limit_config_to_sdk),
+        cors: u.cors.map(cors_config_to_sdk),
         tags: u.tags,
     }
 }
@@ -610,9 +666,37 @@ fn route_to_sdk(r: model::Route) -> oagw_sdk::Route {
                 .collect(),
         }),
         rate_limit: r.rate_limit.map(rate_limit_config_to_sdk),
+        cors: r.cors.map(cors_config_to_sdk),
         tags: r.tags,
         priority: r.priority,
         enabled: r.enabled,
+    }
+}
+
+fn cors_http_method_to_sdk(v: model::CorsHttpMethod) -> oagw_sdk::CorsHttpMethod {
+    match v {
+        model::CorsHttpMethod::Get => oagw_sdk::CorsHttpMethod::Get,
+        model::CorsHttpMethod::Post => oagw_sdk::CorsHttpMethod::Post,
+        model::CorsHttpMethod::Put => oagw_sdk::CorsHttpMethod::Put,
+        model::CorsHttpMethod::Delete => oagw_sdk::CorsHttpMethod::Delete,
+        model::CorsHttpMethod::Patch => oagw_sdk::CorsHttpMethod::Patch,
+        model::CorsHttpMethod::Head => oagw_sdk::CorsHttpMethod::Head,
+        model::CorsHttpMethod::Options => oagw_sdk::CorsHttpMethod::Options,
+    }
+}
+
+fn cors_config_to_sdk(v: model::CorsConfig) -> oagw_sdk::CorsConfig {
+    oagw_sdk::CorsConfig {
+        sharing: sharing_mode_to_sdk(v.sharing),
+        enabled: v.enabled,
+        allowed_origins: v.allowed_origins,
+        allowed_methods: v
+            .allowed_methods
+            .into_iter()
+            .map(cors_http_method_to_sdk)
+            .collect(),
+        expose_headers: v.expose_headers,
+        allow_credentials: v.allow_credentials,
     }
 }
 
@@ -711,6 +795,7 @@ mod tests {
             headers: None,
             plugins: None,
             rate_limit: None,
+            cors: None,
             tags: vec![],
         };
 

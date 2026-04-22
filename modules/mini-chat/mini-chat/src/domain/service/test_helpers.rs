@@ -19,8 +19,8 @@ use uuid::Uuid;
 use crate::domain::error::DomainError;
 use crate::domain::models::ResolvedModel;
 use crate::domain::repos::{
-    AttachmentCleanupEvent, ModelResolver, OutboxEnqueuer, PolicySnapshotProvider,
-    ThreadSummaryRepository, UserLimitsProvider,
+    AttachmentCleanupEvent, ChatCleanupEvent, ModelResolver, OutboxEnqueuer,
+    PolicySnapshotProvider, ThreadSummaryRepository, UserLimitsProvider,
 };
 use crate::domain::service::AuditEnvelope;
 
@@ -200,7 +200,7 @@ impl ModelResolver for MockModelResolver {
             }
             Some(m) if m.is_empty() => Err(DomainError::invalid_model("model must not be empty")),
             Some(m) => {
-                let entry = catalog.iter().find(|e| e.model_id == m && e.enabled);
+                let entry = catalog.iter().find(|e| e.id == m && e.enabled);
                 match entry {
                     Some(e) => Ok(ResolvedModel::from(e)),
                     None => Err(DomainError::invalid_model(&m)),
@@ -226,7 +226,7 @@ impl ModelResolver for MockModelResolver {
         let catalog = self.catalog.lock().unwrap();
         catalog
             .iter()
-            .find(|m| m.model_id == model_id && m.enabled)
+            .find(|m| m.id == model_id && m.enabled)
             .map(ResolvedModel::from)
             .ok_or_else(|| DomainError::model_not_found(model_id))
     }
@@ -376,6 +376,19 @@ impl ThreadSummaryRepository for MockThreadSummaryRepo {
     {
         Ok(None)
     }
+
+    async fn upsert_with_cas<C: modkit_db::secure::DBRunner>(
+        &self,
+        _runner: &C,
+        _chat_id: uuid::Uuid,
+        _tenant_id: uuid::Uuid,
+        _expected_base_frontier: Option<&crate::domain::repos::SummaryFrontier>,
+        _new_frontier: &crate::domain::repos::SummaryFrontier,
+        _summary_text: &str,
+        _token_estimate: i32,
+    ) -> Result<u64, crate::domain::error::DomainError> {
+        Ok(1)
+    }
 }
 
 pub fn mock_thread_summary_repo() -> Arc<MockThreadSummaryRepo> {
@@ -417,24 +430,15 @@ pub struct TestCatalogEntryParams {
 }
 
 /// Build a [`ModelCatalogEntry`] for tests, filling in new required fields with defaults.
-#[allow(clippy::cast_precision_loss)]
 pub fn test_catalog_entry(params: TestCatalogEntryParams) -> ModelCatalogEntry {
     use mini_chat_sdk::models::*;
     use time::OffsetDateTime;
 
-    let input_mult = params.input_tokens_credit_multiplier_micro as f64 / 1_000_000.0;
-    let output_mult = params.output_tokens_credit_multiplier_micro as f64 / 1_000_000.0;
-    let has_vision = params
-        .multimodal_capabilities
-        .iter()
-        .any(|c| c == "VISION_INPUT");
-
     ModelCatalogEntry {
-        model_id: params.model_id,
+        id: params.model_id,
         provider_model_id: params.provider_model_id,
         display_name: params.display_name,
         description: params.description,
-        version: String::new(),
         provider_id: params.provider_id,
         provider_display_name: params.provider_display_name,
         icon: String::new(),
@@ -448,7 +452,8 @@ pub fn test_catalog_entry(params: TestCatalogEntryParams) -> ModelCatalogEntry {
         output_tokens_credit_multiplier_micro: params.output_tokens_credit_multiplier_micro,
         multiplier_display: params.multiplier_display.clone(),
         estimation_budgets: EstimationBudgets::default(),
-        max_retrieved_chunks_per_turn: 5,
+        max_num_results: 5,
+        web_search_context_size: WebSearchContextSize::Low,
         max_tool_calls: 2,
         general_config: ModelGeneralConfig {
             config_type: String::new(),
@@ -458,57 +463,30 @@ pub fn test_catalog_entry(params: TestCatalogEntryParams) -> ModelCatalogEntry {
                 temperature: 0.7,
                 top_p: 1.0,
                 frequency_penalty: 0.0,
-
                 presence_penalty: 0.0,
                 stop: vec![],
+                extra_body: None,
+                reasoning_effort: None,
             },
             features: ModelFeatures {
                 streaming: true,
-                function_calling: true,
                 structured_output: true,
-                fine_tuning: false,
-                distillation: false,
-                fim_completion: false,
-                chat_prefix_completion: false,
-            },
-            input_type: ModelInputType {
-                text: true,
-                image: has_vision,
-                audio: false,
-                video: false,
             },
             tool_support: ModelToolSupport {
                 web_search: false,
                 file_search: false,
                 image_generation: false,
                 code_interpreter: false,
-                computer_use: false,
                 mcp: false,
             },
             supported_endpoints: ModelSupportedEndpoints {
                 chat_completions: true,
                 responses: false,
-                realtime: false,
-                assistants: false,
-                batch_api: false,
-                fine_tuning: false,
                 embeddings: false,
-                videos: false,
                 image_generation: false,
-                image_edit: false,
                 audio_speech_generation: false,
                 audio_transcription: false,
                 audio_translation: false,
-                moderations: false,
-                completions: false,
-            },
-            token_policy: ModelTokenPolicy {
-                input_tokens_credit_multiplier: input_mult,
-                output_tokens_credit_multiplier: output_mult,
-            },
-            performance: ModelPerformance {
-                response_latency_ms: 500,
-                speed_tokens_per_second: 100,
             },
         },
         preference: Some(ModelPreference {
@@ -708,6 +686,9 @@ pub async fn insert_test_message(db: &TestDb, tenant_id: Uuid, chat_id: Uuid, me
         features_used: Set(serde_json::json!([])),
         input_tokens: Set(0),
         output_tokens: Set(0),
+        cache_read_input_tokens: Set(0),
+        cache_write_input_tokens: Set(0),
+        reasoning_tokens: Set(0),
         model: Set(None),
         is_compressed: Set(false),
         created_at: Set(now),
@@ -776,6 +757,95 @@ pub async fn insert_test_message_attachment(
         .expect("insert test message attachment");
 }
 
+// ── Noop FileStorageProvider ──
+
+/// No-op file storage for tests. All operations succeed immediately.
+#[allow(de0309_must_have_domain_model)]
+pub struct NoopFileStorage;
+
+#[async_trait]
+impl crate::domain::ports::FileStorageProvider for NoopFileStorage {
+    async fn upload_file(
+        &self,
+        _ctx: modkit_security::SecurityContext,
+        _provider_id: &str,
+        _params: crate::domain::ports::UploadFileParams,
+    ) -> Result<(String, u64), crate::domain::ports::FileStorageError> {
+        Ok(("test-file-id".to_owned(), 0))
+    }
+
+    async fn delete_file(
+        &self,
+        _ctx: modkit_security::SecurityContext,
+        _provider_id: &str,
+        _provider_file_id: &str,
+    ) -> Result<(), crate::domain::ports::FileStorageError> {
+        Ok(())
+    }
+}
+
+/// No-op vector store provider for tests.
+#[allow(de0309_must_have_domain_model)]
+pub struct NoopVectorStoreProvider;
+
+#[async_trait]
+impl crate::domain::ports::VectorStoreProvider for NoopVectorStoreProvider {
+    async fn create_vector_store(
+        &self,
+        _ctx: modkit_security::SecurityContext,
+        _provider_id: &str,
+    ) -> Result<String, crate::domain::ports::FileStorageError> {
+        Ok("test-vs-id".to_owned())
+    }
+
+    async fn add_file_to_vector_store(
+        &self,
+        _ctx: modkit_security::SecurityContext,
+        _provider_id: &str,
+        _params: crate::domain::ports::AddFileToVectorStoreParams,
+    ) -> Result<(), crate::domain::ports::FileStorageError> {
+        Ok(())
+    }
+
+    async fn delete_vector_store(
+        &self,
+        _ctx: modkit_security::SecurityContext,
+        _provider_id: &str,
+        _vector_store_id: &str,
+    ) -> Result<(), crate::domain::ports::FileStorageError> {
+        Ok(())
+    }
+}
+
+/// File storage that always fails with a transient error.
+#[allow(de0309_must_have_domain_model)]
+pub struct FailingFileStorage;
+
+#[async_trait]
+impl crate::domain::ports::FileStorageProvider for FailingFileStorage {
+    async fn upload_file(
+        &self,
+        _ctx: modkit_security::SecurityContext,
+        _provider_id: &str,
+        _params: crate::domain::ports::UploadFileParams,
+    ) -> Result<(String, u64), crate::domain::ports::FileStorageError> {
+        Err(crate::domain::ports::FileStorageError::Unavailable {
+            message: "simulated provider failure".to_owned(),
+        })
+    }
+
+    async fn delete_file(
+        &self,
+        _ctx: modkit_security::SecurityContext,
+        _provider_id: &str,
+        _provider_file_id: &str,
+    ) -> Result<(), crate::domain::ports::FileStorageError> {
+        Err(crate::domain::ports::FileStorageError::Unavailable {
+            message: "simulated provider failure".to_owned(),
+        })
+    }
+}
+
 // ── Noop & Recording OutboxEnqueuer ──
 
 /// No-op outbox enqueuer for tests that don't need outbox assertions.
@@ -798,10 +868,24 @@ impl OutboxEnqueuer for NoopOutboxEnqueuer {
     ) -> Result<(), crate::domain::error::DomainError> {
         Ok(())
     }
+    async fn enqueue_chat_cleanup(
+        &self,
+        _runner: &(dyn modkit_db::secure::DBRunner + Sync),
+        _event: ChatCleanupEvent,
+    ) -> Result<(), crate::domain::error::DomainError> {
+        Ok(())
+    }
     async fn enqueue_audit_event(
         &self,
         _runner: &(dyn modkit_db::secure::DBRunner + Sync),
         _event: AuditEnvelope,
+    ) -> Result<(), crate::domain::error::DomainError> {
+        Ok(())
+    }
+    async fn enqueue_thread_summary(
+        &self,
+        _runner: &(dyn modkit_db::secure::DBRunner + Sync),
+        _payload: crate::domain::repos::ThreadSummaryTaskPayload,
     ) -> Result<(), crate::domain::error::DomainError> {
         Ok(())
     }
@@ -813,6 +897,8 @@ impl OutboxEnqueuer for NoopOutboxEnqueuer {
 pub struct RecordingOutboxEnqueuer {
     pub usage_events: Mutex<Vec<mini_chat_sdk::UsageEvent>>,
     pub cleanup_events: Mutex<Vec<AttachmentCleanupEvent>>,
+    pub chat_cleanup_events: Mutex<Vec<ChatCleanupEvent>>,
+    pub thread_summary_payloads: Mutex<Vec<crate::domain::repos::ThreadSummaryTaskPayload>>,
     recorded_audit_events: Mutex<Vec<AuditEnvelope>>,
     recorded_flush_count: AtomicU32,
 }
@@ -822,6 +908,8 @@ impl RecordingOutboxEnqueuer {
         Self {
             usage_events: Mutex::new(Vec::new()),
             cleanup_events: Mutex::new(Vec::new()),
+            chat_cleanup_events: Mutex::new(Vec::new()),
+            thread_summary_payloads: Mutex::new(Vec::new()),
             recorded_audit_events: Mutex::new(Vec::new()),
             recorded_flush_count: AtomicU32::new(0),
         }
@@ -858,12 +946,28 @@ impl OutboxEnqueuer for RecordingOutboxEnqueuer {
         self.cleanup_events.lock().unwrap().push(event);
         Ok(())
     }
+    async fn enqueue_chat_cleanup(
+        &self,
+        _runner: &(dyn modkit_db::secure::DBRunner + Sync),
+        event: ChatCleanupEvent,
+    ) -> Result<(), crate::domain::error::DomainError> {
+        self.chat_cleanup_events.lock().unwrap().push(event);
+        Ok(())
+    }
     async fn enqueue_audit_event(
         &self,
         _runner: &(dyn modkit_db::secure::DBRunner + Sync),
         event: AuditEnvelope,
     ) -> Result<(), crate::domain::error::DomainError> {
         self.recorded_audit_events.lock().unwrap().push(event);
+        Ok(())
+    }
+    async fn enqueue_thread_summary(
+        &self,
+        _runner: &(dyn modkit_db::secure::DBRunner + Sync),
+        payload: crate::domain::repos::ThreadSummaryTaskPayload,
+    ) -> Result<(), crate::domain::error::DomainError> {
+        self.thread_summary_payloads.lock().unwrap().push(payload);
         Ok(())
     }
     fn flush(&self) {
@@ -893,10 +997,26 @@ impl OutboxEnqueuer for FailingOutboxEnqueuer {
             "simulated outbox enqueue failure".to_owned(),
         ))
     }
+    async fn enqueue_chat_cleanup(
+        &self,
+        _runner: &(dyn modkit_db::secure::DBRunner + Sync),
+        _event: ChatCleanupEvent,
+    ) -> Result<(), crate::domain::error::DomainError> {
+        Err(crate::domain::error::DomainError::database(
+            "simulated outbox enqueue failure".to_owned(),
+        ))
+    }
     async fn enqueue_audit_event(
         &self,
         _runner: &(dyn modkit_db::secure::DBRunner + Sync),
         _event: AuditEnvelope,
+    ) -> Result<(), crate::domain::error::DomainError> {
+        Ok(())
+    }
+    async fn enqueue_thread_summary(
+        &self,
+        _runner: &(dyn modkit_db::secure::DBRunner + Sync),
+        _payload: crate::domain::repos::ThreadSummaryTaskPayload,
     ) -> Result<(), crate::domain::error::DomainError> {
         Ok(())
     }
@@ -999,7 +1119,7 @@ impl ServiceGatewayClientV1 for MockOagwGateway {
     async fn list_routes(
         &self,
         _: modkit_security::SecurityContext,
-        _: uuid::Uuid,
+        _: Option<uuid::Uuid>,
         _: &oagw_sdk::ListQuery,
     ) -> Result<Vec<oagw_sdk::Route>, ServiceGatewayError> {
         unimplemented!()
@@ -1090,6 +1210,7 @@ pub struct TestMetrics {
     pub attachment_upload: AtomicU64,
     pub attachment_upload_bytes: AtomicU64,
     pub attachments_pending: AtomicI64,
+    pub code_interpreter_calls: AtomicU64,
 }
 
 impl TestMetrics {
@@ -1106,6 +1227,7 @@ impl TestMetrics {
             attachment_upload: AtomicU64::new(0),
             attachment_upload_bytes: AtomicU64::new(0),
             attachments_pending: AtomicI64::new(0),
+            code_interpreter_calls: AtomicU64::new(0),
         }
     }
 }
@@ -1165,6 +1287,21 @@ impl crate::domain::ports::MiniChatMetricsPort for TestMetrics {
         self.attachments_pending.fetch_add(-1, Ordering::Relaxed);
     }
     fn record_image_inputs_per_turn(&self, _count: u32) {}
+    fn record_code_interpreter_calls(&self, _: &str, _: u32) {
+        self.code_interpreter_calls.fetch_add(1, Ordering::Relaxed);
+    }
+    fn record_cleanup_completed(&self, _: &str) {}
+    fn record_cleanup_failed(&self, _: &str) {}
+    fn record_cleanup_retry(&self, _: &str, _: &str) {}
+    fn record_cleanup_backlog(&self, _: &str, _: &str, _: i64) {}
+    fn record_cleanup_vs_with_failed_attachments(&self) {}
+    fn record_orphan_detected(&self, _: &str) {}
+    fn record_orphan_finalized(&self, _: &str) {}
+    fn record_orphan_scan_duration_seconds(&self, _: f64) {}
+    fn record_thread_summary_trigger(&self, _: &str) {}
+    fn record_thread_summary_execution(&self, _: &str) {}
+    fn record_thread_summary_cas_conflict(&self) {}
+    fn record_summary_fallback(&self) {}
 }
 
 // ── Mock User Limits Provider ──

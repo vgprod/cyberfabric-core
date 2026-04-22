@@ -1,6 +1,6 @@
 [package]
 name = "cf-modkit-http"
-version.workspace = true
+version = "0.6.2"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -19,6 +19,8 @@ workspace = true
 
 [features]
 default = []
+# FIPS-140-3: compile rustls and its TLS stack with FIPS-approved cipher suites only
+fips = ["rustls/fips", "hyper-rustls/fips"]
 # OpenTelemetry integration for distributed tracing
 otel = ["dep:opentelemetry", "dep:tracing-opentelemetry"]
 

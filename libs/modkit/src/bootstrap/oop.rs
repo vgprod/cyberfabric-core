@@ -78,7 +78,7 @@ pub struct OopRunOptions {
     /// Path to configuration file
     pub config_path: Option<PathBuf>,
 
-    /// Log verbosity level (0=default, 1=info, 2=debug, 3=trace)
+    /// Log verbosity level (0=default, 1=debug, 2=trace)
     pub verbose: u8,
 
     /// Print effective configuration and exit
@@ -442,7 +442,7 @@ pub async fn run_oop_with_options(opts: OopRunOptions) -> Result<()> {
     };
 
     // Load configuration
-    let mut config = AppConfig::load_or_default(&opts.config_path)?;
+    let mut config = AppConfig::load_or_default(opts.config_path.as_ref())?;
     config.apply_cli_overrides(args.verbose);
 
     // Try to read rendered module config from master host via env var BEFORE logging init
@@ -594,6 +594,7 @@ pub async fn run_oop_with_options(opts: OopRunOptions) -> Result<()> {
         )],
         instance_id,
         oop: None, // OoP modules don't spawn other OoP modules
+        shutdown_deadline: None,
     };
 
     let result = run(run_options).await;
