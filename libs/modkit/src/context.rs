@@ -34,6 +34,7 @@ pub struct ModuleCtx {
     config_provider: Arc<dyn ConfigProvider>,
     client_hub: Arc<crate::client_hub::ClientHub>,
     cancellation_token: CancellationToken,
+    #[cfg_attr(not(feature = "db"), allow(dead_code))]
     db: Option<DbProvider>,
 }
 
@@ -46,6 +47,7 @@ pub struct ModuleContextBuilder {
     config_provider: Arc<dyn ConfigProvider>,
     client_hub: Arc<crate::client_hub::ClientHub>,
     root_token: CancellationToken,
+    #[cfg_attr(not(feature = "db"), allow(dead_code))]
     db_manager: Option<Arc<DbManager>>, // internal only, never exposed to modules
 }
 
@@ -76,6 +78,7 @@ impl ModuleContextBuilder {
     ///
     /// # Errors
     /// Returns an error if database resolution fails.
+    #[cfg_attr(not(feature = "db"), allow(clippy::unused_async))]
     pub async fn for_module(&self, module_name: &str) -> anyhow::Result<ModuleCtx> {
         let db: Option<DbProvider> = {
             #[cfg(feature = "db")]

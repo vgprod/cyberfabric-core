@@ -20,24 +20,32 @@ workspace = true
 [features]
 default = []
 
+# Internal helper, enabled automatically by any concrete backend. Used as a
+# virtual OR in targets that need some backend but don't care which (e.g. the
+# outbox benchmarks). Not intended to be enabled directly.
+_any-backend = []
+
 # DB driver selection -- the single entry point for backend choice.
 # sea-orm and sea-orm-migration remain non-optional: modkit-db unconditionally
 # re-exports sea_orm_migration and uses sea_orm::{DatabaseConnection, DbErr, …}
 # in non-cfg-gated code.  sqlx is optional because every source-level use is
 # already behind #[cfg(feature = "pg"|"mysql"|"sqlite")].
 sqlite = [
+    "_any-backend",
     "dep:sqlx",
     "sqlx/sqlite",
     "sea-orm/sqlx-sqlite",
     "sea-orm-migration/sqlx-sqlite",
 ]
 pg = [
+    "_any-backend",
     "dep:sqlx",
     "sqlx/postgres",
     "sea-orm/sqlx-postgres",
     "sea-orm-migration/sqlx-postgres",
 ]
 mysql = [
+    "_any-backend",
     "dep:sqlx",
     "sqlx/mysql",
     "sea-orm/sqlx-mysql",
@@ -97,12 +105,14 @@ required-features = ["sqlite", "preview-outbox"]
 [[bench]]
 name = "outbox_throughput"
 harness = false
-required-features = ["preview-outbox"]
+# `_any-backend` is a virtual OR over pg/mysql/sqlite (see [features] above).
+# The bench body compile-errors out if no backend is present.
+required-features = ["preview-outbox", "_any-backend"]
 
 [[bench]]
 name = "worker_overhead"
 harness = false
-required-features = ["preview-outbox"]
+required-features = ["preview-outbox", "_any-backend"]
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports"] }

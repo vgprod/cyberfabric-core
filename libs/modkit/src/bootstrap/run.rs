@@ -283,6 +283,7 @@ fn try_build_oop_module_config(
 /// # Errors
 ///
 /// Returns an error if OpenTelemetry tracing initialization fails while tracing is enabled.
+#[cfg_attr(not(feature = "otel"), allow(clippy::unnecessary_wraps))]
 pub fn init_procedure(config: &AppConfig) -> Result<()> {
     // Build OpenTelemetry layer before logging
     #[cfg(feature = "otel")]

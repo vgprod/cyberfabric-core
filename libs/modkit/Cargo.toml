@@ -46,6 +46,7 @@ bootstrap = [
     "dep:tracing-appender",
     "dep:file-rotate",
     "dep:tracing-log",
+    "dep:tracing-subscriber",
     "dep:chrono",
     "dep:url",
     "dep:dsn",
