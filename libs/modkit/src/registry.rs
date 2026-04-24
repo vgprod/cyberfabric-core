@@ -938,6 +938,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "db")]
     fn db_capability_without_core_fails() {
         let mut b = RegistryBuilder::default();
         b.register_core_with_meta("core_a", &[], Arc::new(DummyCore));
@@ -970,6 +971,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "db")]
     fn capability_query_works() {
         let mut b = RegistryBuilder::default();
         let module = Arc::new(DummyCore);
@@ -1040,8 +1042,10 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "db")]
     #[derive(Default)]
     struct DummyDb;
+    #[cfg(feature = "db")]
     impl contracts::DatabaseCapability for DummyDb {
         fn migrations(&self) -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
             vec![]

@@ -7,6 +7,7 @@
 use anyhow::Context;
 #[cfg(feature = "otel")]
 use opentelemetry::{KeyValue, global, trace::TracerProvider as _};
+#[cfg(feature = "otel")]
 use std::sync::Once;
 
 #[cfg(feature = "otel")]
@@ -130,6 +131,7 @@ fn build_grpc_exporter(
     b.build().context("build OTLP gRPC exporter")
 }
 
+#[cfg(feature = "otel")]
 static INIT_TRACING: Once = Once::new();
 
 /// Initialize OpenTelemetry tracing from configuration and return a layer
@@ -494,12 +496,15 @@ pub fn otel_connectivity_probe(_cfg: &super::config::OpenTelemetryConfig) -> any
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    #[cfg(feature = "otel")]
     use crate::telemetry::config::{
         Exporter, ExporterKind, OpenTelemetryConfig, OpenTelemetryResource, Sampler, TracingConfig,
     };
+    #[cfg(feature = "otel")]
     use std::collections::{BTreeMap, HashMap};
 
     /// Helper to build an `OpenTelemetryConfig` with the given tracing config.
+    #[cfg(feature = "otel")]
     fn otel_with_tracing(tracing: TracingConfig) -> OpenTelemetryConfig {
         OpenTelemetryConfig {
             tracing,

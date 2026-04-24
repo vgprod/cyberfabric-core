@@ -29,8 +29,12 @@ static INSTALLED: Once = Once::new();
 /// Returns [`CryptoProviderError::FipsProviderConflict`] if the `fips` feature is
 /// enabled and another crypto provider has already been installed.
 pub fn init_crypto_provider() -> Result<(), CryptoProviderError> {
-    #[allow(unused_mut)]
+    // `mut` is only needed in the `fips` branch (which reassigns `result`
+    // on provider conflict); the non-fips branch never writes to it.
+    #[cfg(feature = "fips")]
     let mut result = Ok(());
+    #[cfg(not(feature = "fips"))]
+    let result = Ok(());
 
     INSTALLED.call_once(|| {
         #[cfg(feature = "fips")]
@@ -47,8 +51,8 @@ pub fn init_crypto_provider() -> Result<(), CryptoProviderError> {
 
         #[cfg(not(feature = "fips"))]
         {
-            #[allow(clippy::let_underscore_must_use)]
-            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+            // A provider may already have been installed (e.g. by tests); ignore that case.
+            let _ignored = rustls::crypto::aws_lc_rs::default_provider().install_default();
         }
     });
 

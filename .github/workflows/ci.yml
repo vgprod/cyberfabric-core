@@ -65,10 +65,10 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustup show
 
-      - name: Install nextest
+      - name: Install nextest and cargo-hack
         uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
         with:
-          tool: nextest
+          tool: nextest,cargo-hack
 
       # Cache Cargo registry/git + target/ across platforms.
       - name: Cache Cargo/target
