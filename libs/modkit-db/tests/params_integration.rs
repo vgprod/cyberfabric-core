@@ -1,5 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-#![cfg(feature = "integration")]
+#![cfg(all(
+    feature = "integration",
+    any(feature = "sqlite", feature = "pg", feature = "mysql")
+))]
 
 //! Integration tests for database connection parameters.
 //!

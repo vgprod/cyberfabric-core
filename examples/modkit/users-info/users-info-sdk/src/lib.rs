@@ -30,6 +30,7 @@
 #![forbid(unsafe_code)]
 #![deny(rust_2018_idioms)]
 
+#[cfg(feature = "odata")]
 pub mod client;
 pub mod errors;
 pub mod models;
@@ -39,6 +40,7 @@ pub mod models;
 pub mod odata;
 
 // Re-export main types at crate root for convenience
+#[cfg(feature = "odata")]
 pub use client::{
     AddressesStreamingClientV1, CitiesStreamingClientV1, UsersInfoClientV1, UsersStreamingClientV1,
 };

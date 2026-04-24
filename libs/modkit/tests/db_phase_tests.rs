@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![cfg(feature = "db")]
 
 //! Tests for DB migration phase behavior
 //!

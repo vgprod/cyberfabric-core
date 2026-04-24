@@ -134,6 +134,7 @@ setup: .setup-stamp
 	cargo install cargo-dylint
 	cargo install dylint-link
 	cargo install cargo-fuzz
+	cargo install cargo-hack
 	@if echo "$$OS" | grep -iq windows || [ -n "$$COMSPEC" ]; then \
 		echo "WARNING: kani-verifier and cargo-llvm-cov installation skipped on Windows."; \
 		echo "These tools are not supported on Windows. Use WSL2 or Docker to install instead."; \
@@ -207,10 +208,15 @@ validate-module-names:
 
 .PHONY: clippy lychee kani geiger safety lint dylint dylint-list dylint-test gts-docs gts-docs-vendor gts-docs-release gts-docs-vendor-release gts-docs-test cypilot-validate cypilot-spec-coverage
 
-# Run clippy linter (excludes gts-rust submodule which has its own lint settings)
+# Run clippy via cargo-hack with `--each-feature`: one pass per individual
+# feature, plus a `--no-default-features` pass and an `--all-features` pass.
+# This ensures mutually exclusive cfg branches (e.g. `fips`/`not(fips)` in
+# bootstrap/crypto.rs) are both visited — otherwise warnings in the inactive
+# branch silently slip through (see GH issue #1574).
 clippy:
 	$(call check_rustup_component,clippy)
-	cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::perf
+	$(call check_tool,cargo-hack)
+	cargo hack clippy --workspace --all-targets --each-feature -- -D warnings -D clippy::perf
 
 # Check cypilot spec-to-code traceability coverage
 cypilot-spec-coverage:

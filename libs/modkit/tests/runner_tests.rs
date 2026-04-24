@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![cfg(feature = "db")]
 
 //! Comprehensive tests for the `ModKit` runner functionality
 //!

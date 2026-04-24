@@ -3,6 +3,9 @@
 //! This API is designed for `ClientHub` registration as `Arc<dyn UsersInfoClientV1>`.
 //! All type erasure (boxed streams/futures) lives here; internal implementations
 //! remain strongly typed and GAT-based.
+//!
+//! Gated on the `odata` feature (enabled by default) via `pub mod client` in
+//! lib.rs, because it depends on odata-only crates (`modkit_sdk`, `futures_core`).
 
 use async_trait::async_trait;
 use futures_core::Stream;

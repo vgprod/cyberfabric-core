@@ -189,6 +189,7 @@ impl HostRuntime {
     }
 
     /// Helper: resolve context for a module with error mapping.
+    #[cfg(feature = "db")]
     async fn module_context(
         &self,
         module_name: &'static str,
